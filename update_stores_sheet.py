@@ -23,7 +23,7 @@ import openpyxl
 
 # Keep this in sync with the URL set via the "⚙ Sheets sync" button in the
 # Route Planner tool -- if you change one, change the other.
-SYNC_URL = "https://script.google.com/macros/s/AKfycbxmpKfBcovwjKTyZg_A9z4b0gHmV1XSq0oykl67ZsQ4jQJEVpeOiPw6NhRI5BMbcvnnOg/exec"
+SYNC_URL = "https://script.google.com/macros/s/AKfycbxJQOlyXKHuqOXLFMFxRUuJ3z-I50OL8kkPiMz0uOKY4DqjK0WdVOmJBd1aUTuWaWMilA/exec"
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent
 SEVEN_ELEVEN_XLSX = DASHBOARD_DIR / "Google_MyMap_7-Eleven Database NTB.xlsx"
