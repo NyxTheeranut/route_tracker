@@ -192,7 +192,9 @@ function myStores_(idToken) {
       totalStoresFound: stores.length,
       totalByType: countByType_(stores),
       matchedForYou: scoped.length,
-      matchedOn: user.role === "cm" ? { cm: user.cmName } : { person: user.personName },
+      matchedOn: user.role === "admin" ? "admin (no filter)"
+        : user.role === "cm" ? { cm: user.cmName }
+        : { person: user.personName },
     },
   };
 }
@@ -380,7 +382,15 @@ function writeStoreSheet_(sheetName, stores) {
       s.lat != null ? s.lat : "", s.lng != null ? s.lng : "",
     ]);
   });
-  sheet.getRange(1, 1, rows.length, STORE_HEADER.length).setValues(rows);
+  var range = sheet.getRange(1, 1, rows.length, STORE_HEADER.length);
+  // Set BEFORE writing, not after: Sheets "helpfully" auto-detects values like
+  // "7-11" as a date (July 11) and silently stores a date instead of the literal
+  // string, unless the cell is already plain-text formatted at write time. This
+  // is what corrupted every 7-11 store's type -- setNumberFormat AFTER the fact
+  // wouldn't have un-corrupted already-written cells, only prevents it going
+  // forward, hence the full-refresh re-run being required.
+  range.setNumberFormat("@");
+  range.setValues(rows);
   sheet.setFrozenRows(1);
   sheet.autoResizeColumns(1, STORE_HEADER.length);
 }
