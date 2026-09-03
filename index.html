@@ -802,7 +802,7 @@
       </div>
     </div>
 
-    <div id="app" style="display: none">
+    <div id="app">
       <header>
         <h1>Route <span>Planner</span></h1>
 
@@ -2604,6 +2604,13 @@
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
 
+      // General-purpose safety net: re-measure whenever the map's actual
+      // container size changes (window resize, browser zoom, etc.) so
+      // Leaflet always fetches tiles for the size it's really drawn at.
+      new ResizeObserver(() => map.invalidateSize()).observe(
+        document.getElementById("map"),
+      );
+
       const districtAreaLayer = L.layerGroup().addTo(map);
       const markerLayer = L.layerGroup().addTo(map);
       const routeLineCasing = L.polyline([], {
@@ -4181,16 +4188,11 @@
           }
           STORES = data.stores || [];
           document.getElementById("loginGate").style.display = "none";
-          document.getElementById("app").style.display = "flex";
+          // #app is normal-flow the whole time (never display:none) -- the
+          // opaque login gate on top was covering it, not hiding it, so the
+          // map was already correctly sized and loading tiles underneath.
+          // Removing the gate just reveals what's already there.
           initApp();
-          // the map was created while #app was display:none, so Leaflet
-          // measured a 0x0 container and only ever fetched tiles for that --
-          // now that the real layout exists, tell it to re-measure and load
-          // what it actually needs. A tick's delay so the browser finishes
-          // the layout pass first.
-          setTimeout(() => {
-            map.invalidateSize();
-          }, 100);
         } catch (e) {
           idToken = null;
           document.getElementById("gsiButton").style.display = "flex";
