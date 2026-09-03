@@ -4183,6 +4183,14 @@
           document.getElementById("loginGate").style.display = "none";
           document.getElementById("app").style.display = "flex";
           initApp();
+          // the map was created while #app was display:none, so Leaflet
+          // measured a 0x0 container and only ever fetched tiles for that --
+          // now that the real layout exists, tell it to re-measure and load
+          // what it actually needs. A tick's delay so the browser finishes
+          // the layout pass first.
+          setTimeout(() => {
+            map.invalidateSize();
+          }, 100);
         } catch (e) {
           idToken = null;
           document.getElementById("gsiButton").style.display = "flex";
