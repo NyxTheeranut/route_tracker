@@ -62,7 +62,7 @@ Sheet. It's never called from the hosted page.
 
 ### 3. Wire the two together
 
-1. In `Route Planner.html`, set `GOOGLE_CLIENT_ID` (near the top of the
+1. In `index.html`, set `GOOGLE_CLIENT_ID` (near the top of the
    `<script>` block) to the Client ID from step 1.
 2. Set `DEFAULT_SYNC_URL` to the Web app URL from step 2.
 

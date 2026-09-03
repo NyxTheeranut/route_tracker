@@ -8,9 +8,10 @@ Run this whenever Google_MyMap_7-Eleven Database NTB.xlsx or
 Google_MyMap_RTR Database.xlsx change. Each run fully replaces those two tabs
 (not an incremental append), so it's always safe to re-run.
 
-This does NOT rebuild Route Planner.html -- that still has its own baked-in copy
-of the store data for offline use. Re-run the extraction step from the project
-history if the HTML tool itself also needs to pick up the new stores.
+index.html has no store data baked into it -- it fetches everything live from
+the "7-Eleven Stores" / "RTR Stores" tabs this script writes to, scoped per
+signed-in user by the Apps Script backend. So running this script is the whole
+update: nothing else needs to be rebuilt for the page to pick up new stores.
 """
 import json
 import datetime
