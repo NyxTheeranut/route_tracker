@@ -4187,6 +4187,12 @@
             return;
           }
           STORES = data.stores || [];
+          if (data.debug) {
+            // "why do I see 0/fewer stores than expected" is answerable here
+            // instead of guessing -- shows how many stores exist in the Sheet
+            // at all vs. how many actually matched this signed-in person/cm.
+            console.log("[Route Planner] myStores debug:", data.debug);
+          }
           document.getElementById("loginGate").style.display = "none";
           // #app is normal-flow the whole time (never display:none) -- the
           // opaque login gate on top was covering it, not hiding it, so the

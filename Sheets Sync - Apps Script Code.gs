@@ -179,19 +179,48 @@ function myStores_(idToken) {
   } else {
     scoped = stores.filter(function (s) { return s.person === user.personName; });
   }
-  return { ok: true, email: email, role: user.role, stores: scoped };
+  return {
+    ok: true,
+    email: email,
+    role: user.role,
+    stores: scoped,
+    // Not used by the normal UI -- surfaced in the browser console so "why do
+    // I see 0 stores" is answerable by looking, not guessing: is it that no
+    // store data was found at all, or that data exists but didn't match this
+    // person/cm's name exactly?
+    debug: {
+      totalStoresFound: stores.length,
+      totalByType: countByType_(stores),
+      matchedForYou: scoped.length,
+      matchedOn: user.role === "cm" ? { cm: user.cmName } : { person: user.personName },
+    },
+  };
 }
 
+function countByType_(stores) {
+  var counts = {};
+  stores.forEach(function (s) {
+    var t = s.type || "unknown";
+    counts[t] = (counts[t] || 0) + 1;
+  });
+  return counts;
+}
+
+// Scans every tab in the spreadsheet and reads any that look like store data --
+// by COLUMN STRUCTURE (has code/type/lat/lng), not by an exact tab name. That
+// way it doesn't matter whether a tab is named "7-Eleven Stores", was renamed
+// by hand, or split differently -- it's picked up either way. It also means
+// this never accidentally reads the Users tab or a daily visit tab, since
+// neither has this column shape.
 function readAllStores_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var out = [];
-  ["7-Eleven Stores", "RTR Stores"].forEach(function (sheetName) {
-    var sheet = ss.getSheetByName(sheetName);
-    if (!sheet) return;
+  ss.getSheets().forEach(function (sheet) {
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return;
     var idx = {};
-    data[0].forEach(function (h, i) { idx[h] = i; });
+    data[0].forEach(function (h, i) { idx[String(h).trim()] = i; });
+    if (idx.code == null || idx.type == null || idx.lat == null || idx.lng == null) return;
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
       if (!row[idx.code]) continue;
