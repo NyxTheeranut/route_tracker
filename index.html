@@ -2660,6 +2660,7 @@
                 chunks.length > 1 || state.dayMode === "manual" ? chunks : null;
             }
             state.activeDay = saved.activeDay || 0;
+            clampActiveDay();
             state.confirmedDays = Array.isArray(saved.confirmedDays)
               ? saved.confirmedDays
               : [];
@@ -3320,6 +3321,20 @@
         return !!state.confirmedDays[dayIdx];
       }
 
+      // activeDay can point past the end of dayChunks -- restored from storage
+      // after a plan shrank, or a day count that changed since. Indexing a
+      // missing day then threw on the next click, so keep it in range.
+      function clampActiveDay() {
+        if (!state.dayChunks || !state.dayChunks.length) {
+          state.activeDay = 0;
+          return;
+        }
+        state.activeDay = Math.max(
+          0,
+          Math.min(state.activeDay, state.dayChunks.length - 1),
+        );
+      }
+
       function toggleChecked(id) {
         if (state.checked.has(id)) {
           removeFromRoute(id);
@@ -3329,6 +3344,7 @@
         state.checked.add(id);
         state.order.push(id);
         if (state.dayChunks) {
+          clampActiveDay();
           state.dayChunks[state.activeDay].push(id);
         }
         saveRouteState();
@@ -3345,7 +3361,15 @@
           state.dayChunks = state.dayChunks.map((chunk) =>
             chunk.filter((x) => x !== id),
           );
-          if (state.dayChunks.every((c) => c.length === 0))
+          // Collapsing an emptied plan back to "no plan" makes sense in auto
+          // mode, but in a manual session all-empty days are a legitimate
+          // working state (you may have just created Day 2 and be about to
+          // fill it). Tearing the session down there threw away the days you'd
+          // set up and kicked you back to "Start manual route".
+          if (
+            state.dayMode !== "manual" &&
+            state.dayChunks.every((c) => c.length === 0)
+          )
             state.dayChunks = null;
         }
         saveRouteState();
@@ -3377,6 +3401,14 @@
         state.order = [];
         state.dayChunks = null;
         state.activeDay = 0;
+        // These have to go too. Leaving them meant the NEXT plan you built
+        // inherited the old one's confirmations -- a fresh Day 1 would come up
+        // already locked in checklist mode, with pin clicks silently doing
+        // nothing (manualSessionActive() is false on a confirmed day). Visit
+        // ticks are already recorded in the Sheet, so clearing them here only
+        // drops the local copy, not the history.
+        state.confirmedDays = [];
+        state.visited = {};
         saveRouteState();
         renderList();
         renderRoutePanel();
@@ -3967,6 +3999,7 @@
       }
       function manualClickAssign(id) {
         if (!manualSessionActive()) return false;
+        clampActiveDay();
         const curDay = state.dayChunks[state.activeDay];
         if (curDay.includes(id)) {
           removeFromRoute(id);
