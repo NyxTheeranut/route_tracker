@@ -821,11 +821,6 @@
         #statLine {
           display: none; /* the route panel already says this */
         }
-        #syncConfigBtn {
-          padding: 5px 8px;
-          font-size: 11px;
-        }
-
         .view-switch {
           display: flex;
           gap: 6px;
@@ -935,12 +930,6 @@
 
         <div class="spacer"></div>
         <div class="stat" id="statLine"><b>0</b> stores shown</div>
-        <button
-          id="syncConfigBtn"
-          title="Connect this tool to a Google Sheet so visit check-offs sync automatically"
-        >
-          ⚙ Sheets sync
-        </button>
       </header>
 
       <div id="personTabs" class="person-tabs"></div>
@@ -4232,21 +4221,11 @@
         pullVisitsForToday();
       });
 
-      document.getElementById("syncConfigBtn").addEventListener("click", () => {
-        const current = getSyncUrl();
-        const next = prompt(
-          "Paste your Apps Script Web App URL to sync visit check-offs to Google Sheets automatically.\n" +
-            "Leave blank and click OK to turn sync off.",
-          current,
-        );
-        if (next === null) return; // cancelled
-        setSyncUrl(next.trim());
-        alert(
-          next.trim()
-            ? "Sync connected. Ticking a store as visited will now sync automatically."
-            : "Sync turned off.",
-        );
-      });
+      // Sheet sync is pre-configured (DEFAULT_SYNC_URL below) and just works --
+      // there used to be a "Sheets sync" button here to repoint it, but it was
+      // a footgun for salespeople: leave the prompt blank + OK and it silently
+      // turns sync off. Repoint it from the browser console instead, if ever
+      // needed: setSyncUrl("https://script.google.com/.../exec")
       document.getElementById("editRouteBtn").addEventListener("click", () => {
         state.confirmedDays[state.activeDay] = false;
         saveRouteState();
