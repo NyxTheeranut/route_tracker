@@ -42,6 +42,9 @@
         display: flex;
         flex-direction: column;
         height: 100vh;
+        /* dvh accounts for mobile browser toolbars sliding in/out; browsers
+           that don't support it just keep the vh line above */
+        height: 100dvh;
       }
 
       .login-gate {
@@ -774,7 +777,73 @@
         width: 100%;
       }
 
+      /* Mobile: one panel at a time via the view switcher, instead of three
+         stacked 34vh boxes you'd have to scroll between constantly. Hidden on
+         desktop, where all three panels are visible side by side. */
+      .view-switch {
+        display: none;
+      }
+
       @media (max-width: 900px) {
+        body {
+          overflow-x: hidden;
+        }
+        header {
+          gap: 8px 10px;
+          padding: 8px 12px;
+        }
+        header h1 {
+          font-size: 14px;
+        }
+        /* labels cost a whole line each on a phone; the controls are
+           self-explanatory enough without them */
+        header .field label {
+          display: none;
+        }
+        /* don't let fields stretch -- they can't shrink past their nowrap chips,
+           which is what was pushing the row wider than the screen instead of
+           letting header's flex-wrap do its job */
+        header .field {
+          flex: 0 1 auto;
+          min-width: 0;
+          max-width: 100%;
+        }
+        header .chip-toggle {
+          flex-wrap: wrap;
+        }
+        header select,
+        header input[type="text"] {
+          min-width: 0;
+          max-width: 46vw;
+          font-size: 12.5px;
+          padding: 5px 7px;
+        }
+        #statLine {
+          display: none; /* the route panel already says this */
+        }
+        #syncConfigBtn {
+          padding: 5px 8px;
+          font-size: 11px;
+        }
+
+        .view-switch {
+          display: flex;
+          gap: 6px;
+          padding: 8px 12px;
+          background: var(--panel);
+          border-bottom: 1px solid var(--border);
+        }
+        .view-switch button {
+          flex: 1;
+          padding: 9px 6px;
+          font-size: 12.5px;
+        }
+        .view-switch button.active {
+          background: var(--accent);
+          border-color: var(--accent);
+          color: #fff;
+        }
+
         main {
           flex-direction: column;
         }
@@ -782,12 +851,39 @@
         #routePanel {
           width: 100%;
           max-width: none;
+          min-width: 0;
           border: none;
-          border-bottom: 1px solid var(--border);
-          max-height: 34vh;
+          max-height: none;
+          flex: 1;
         }
+        /* the district/subdistrict picker was taking half the screen before you
+           reached the actual store list -- bound it and let it scroll itself */
+        .district-panel {
+          max-height: 30vh;
+          overflow-y: auto;
+        }
+        #districtGrid {
+          max-height: none;
+        }
+        /* belt and braces against any stray horizontal overflow */
+        #app,
+        main {
+          max-width: 100%;
+          min-width: 0;
+        }
+
+        body[data-view="stores"] #map,
+        body[data-view="stores"] #routePanel,
+        body[data-view="map"] #sidebar,
+        body[data-view="map"] #routePanel,
+        body[data-view="route"] #sidebar,
+        body[data-view="route"] #map {
+          display: none;
+        }
+
         #map {
-          min-height: 38vh;
+          flex: 1;
+          min-height: 0;
         }
       }
     </style>
@@ -848,6 +944,12 @@
       </header>
 
       <div id="personTabs" class="person-tabs"></div>
+
+      <div class="view-switch" id="viewSwitch">
+        <button data-view="stores" class="active">Stores</button>
+        <button data-view="map">Map</button>
+        <button data-view="route">Route</button>
+      </div>
 
       <main>
         <div id="sidebar">
@@ -936,13 +1038,13 @@
             ></div>
             <div id="manualHint" class="manual-hint" style="display: none">
               Click "Start manual route", then click store pins on the map (or
-              tick them on the left) to add them to the day. Click "Next day"
+              tick them in the Stores list) to add them to the day. Click "Next day"
               when that day's list is ready.
             </div>
           </div>
           <div id="routeList">
             <div class="empty-hint">
-              Tick stores on the left (or on the map) to add them to the plan.
+              Tick stores in the Stores list (or tap pins on the map) to add them to the plan.
               Then set how many stores per day and hit "Build route".
             </div>
           </div>
@@ -2383,14 +2485,14 @@
           String(d.getDate()).padStart(2, "0")
         );
       }
+      // Deliberately NOT keyed by today's date. A multi-day plan is a multi-day
+      // artifact -- keying it by the day it was built meant it silently vanished
+      // at midnight, so coming back the next morning to run Day 2 found nothing.
+      // It now persists until it's rebuilt or cleared. (Visit ticks still record
+      // against the real calendar day they happened on -- see syncVisit.)
       function storageKey() {
         return (
-          "routePlanner_v1_" +
-          (state.cm || "anyCM") +
-          "_" +
-          (state.person || "all") +
-          "_" +
-          todayKey()
+          "routePlanner_v2_" + (state.cm || "anyCM") + "_" + (state.person || "all")
         );
       }
 
@@ -3185,6 +3287,9 @@
             toggleChecked(store.id);
           });
           row.addEventListener("click", () => {
+            // on a phone the map is a separate view, so jump to it -- otherwise
+            // tapping a store would pan a map you can't see and look like a no-op
+            if (isMobileLayout()) setMobileView("map");
             map.setView([store.lat, store.lng], Math.max(map.getZoom(), 16));
             const m = markersById[store.id];
             if (m) m.openPopup();
@@ -3315,7 +3420,7 @@
         if (state.dayMode === "manual" && !manualActive) {
           manualHintEl.style.display = "block";
           manualHintEl.textContent =
-            'Click "Start manual route", then click store pins on the map (or tick them on the left) to add them to the day. Click "Next day" when that day\'s list is ready.';
+            'Click "Start manual route", then click store pins on the map (or tick them in the Stores list) to add them to the day. Click "Next day" when that day\'s list is ready.';
           assignBannerEl.style.display = "none";
           dayNavEl.style.display = "none";
         } else if (manualActive) {
@@ -3381,8 +3486,8 @@
         if (activeIds.length === 0) {
           routeListEl.innerHTML =
             state.dayMode === "manual"
-              ? '<div class="empty-hint">Click "Start manual route" above, then click store pins on the map (or tick them on the left) to build each day\'s list.</div>'
-              : '<div class="empty-hint">Tick stores on the left (or on the map) to add them to the plan. Then set stores per day and hit "Build route".</div>';
+              ? '<div class="empty-hint">Click "Start manual route" above, then click store pins on the map (or tick them in the Stores list) to build each day\'s list.</div>'
+              : '<div class="empty-hint">Tick stores in the Stores list (or tap pins on the map) to add them to the plan. Then set stores per day and hit "Build route".</div>';
         } else if (confirmed) {
           routeListEl.innerHTML = "";
           const frag = document.createDocumentFragment();
@@ -4149,12 +4254,37 @@
       // ---------- sign-in + init ----------
       let idToken = null;
 
+      // ---------- mobile view switching ----------
+      // On phones only one panel is on screen at a time (see the max-width:900px
+      // block). Desktop ignores all of this and shows all three side by side.
+      function isMobileLayout() {
+        return window.matchMedia("(max-width: 900px)").matches;
+      }
+
+      function setMobileView(view) {
+        document.body.dataset.view = view;
+        document.querySelectorAll("#viewSwitch button").forEach((b) => {
+          b.classList.toggle("active", b.dataset.view === view);
+        });
+        if (view === "map") {
+          // Same trap as the login gate: a container revealed from display:none
+          // was never measured, so Leaflet needs telling to re-measure. The
+          // ResizeObserver doesn't reliably fire for display toggles.
+          setTimeout(() => map.invalidateSize(), 0);
+        }
+      }
+
+      document.querySelectorAll("#viewSwitch button").forEach((btn) => {
+        btn.addEventListener("click", () => setMobileView(btn.dataset.view));
+      });
+
       function initApp() {
         populateCmSelect();
         renderPersonTabs();
         loadRouteState();
         renderList();
         renderRoutePanel();
+        setMobileView("stores");
       }
 
       function showLoginStatus(html, isError) {
