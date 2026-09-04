@@ -3857,6 +3857,13 @@
             body: JSON.stringify(payload),
           });
           if (!res.ok) throw new Error("HTTP " + res.status);
+          const data = await res.json();
+          // Apps Script answers HTTP 200 even when it rejected the write
+          // internally (an expired sign-in, most often) -- it catches its own
+          // errors and returns {ok:false} in the body rather than a non-200
+          // status. Checking only res.ok meant a rejected write still showed
+          // "✓ synced". This is what data.ok is actually for.
+          if (!data.ok) throw new Error(data.error || "rejected by server");
           if (statusEl) {
             statusEl.textContent = "✓ synced";
             statusEl.className = "sync-status ok";
@@ -3867,6 +3874,11 @@
             statusEl.textContent = "⚠ sync failed (saved locally)";
             statusEl.className = "sync-status err";
           }
+          // Most likely cause: the sign-in token (issued once, ~1hr ago) has
+          // expired. Ask Google for a fresh one in the background -- if that's
+          // what it was, the next tick will go through instead of failing the
+          // same way for the rest of the day.
+          requestTokenRefresh();
         }
       }
 
@@ -4306,8 +4318,31 @@
         el.innerHTML = html;
       }
 
+      // True once the app has actually loaded and shown stores. Distinguishes
+      // the one real sign-in from every later silent refresh -- both land in
+      // onGoogleSignIn (same GIS callback), but a refresh must only replace
+      // the token, never repeat the loading UI or re-run initApp() (which
+      // would, e.g., snap a mobile user's view back to "Stores" mid-route).
+      let appInitialized = false;
+
+      function requestTokenRefresh() {
+        if (window.google && google.accounts && google.accounts.id) {
+          google.accounts.id.prompt();
+        }
+      }
+
+      // ID tokens expire after about an hour, but a route can run all day --
+      // refresh well before that so a sync mid-afternoon doesn't hit the
+      // expired-token rejection in the first place. requestTokenRefresh() is
+      // also called reactively on any sync failure (see syncVisit) as a
+      // backstop; this is the proactive half.
+      function scheduleTokenRefresh() {
+        setInterval(requestTokenRefresh, 45 * 60 * 1000);
+      }
+
       async function onGoogleSignIn(response) {
         idToken = response.credential;
+        if (appInitialized) return; // silent refresh -- token swapped in, nothing else changes
         document.getElementById("gsiButton").style.display = "none";
         showLoginStatus('<div class="login-spinner"></div>', false);
         try {
@@ -4341,6 +4376,8 @@
           // map was already correctly sized and loading tiles underneath.
           // Removing the gate just reveals what's already there.
           initApp();
+          appInitialized = true;
+          scheduleTokenRefresh();
         } catch (e) {
           idToken = null;
           document.getElementById("gsiButton").style.display = "flex";
