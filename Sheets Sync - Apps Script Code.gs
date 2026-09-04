@@ -26,10 +26,22 @@
  * resulting ID token on every request. This script verifies that token against
  * Google directly (no session/cookie trust needed) and checks the token's
  * audience against OAUTH_CLIENT_ID, so it only accepts tokens issued for THIS
- * app -- not a token from some other Google sign-in. The verified email is then
- * looked up in the Users tab to decide what the caller is allowed to see.
- * markVisited/getVisits also require a valid token now -- an unrecognized email
- * can't write anything.
+ * app -- not a token from some other Google sign-in.
+ *
+ * A verified token proves WHO is calling, not that they're allowed to. Every
+ * action enforces that separately:
+ *   myStores               -> requires the email to be a row in Users, scopes
+ *                              the returned stores to that row's role.
+ *   markVisited / getVisits -> requireTeamMember_ requires the same Users-tab
+ *                              membership (a valid Google account alone is
+ *                              NOT enough -- it must be a signed-up teammate),
+ *                              then requireOwnScope_ requires the person/cm in
+ *                              the request to actually be the caller's own
+ *                              (or their team's, for cm/admin).
+ *   syncStores              -> not a person signing in at all (it's
+ *                              update_stores_sheet.py on your machine), so it
+ *                              can't go through the Users tab -- gated by a
+ *                              shared SYNC_SECRET instead.
  *
  * ── SETUP (one-time) ─────────────────────────────────────────────────────
  *  1. Create a new Google Sheet (or open one you want to use for this).
@@ -37,6 +49,11 @@
  *  3. Project Settings (gear icon, left sidebar) -> Script Properties -> Add:
  *       OAUTH_CLIENT_ID = <the Client ID from Google Cloud Console -- see the
  *       Route Planner repo's README for how to create it>
+ *       SYNC_SECRET = <any random string -- generate one with, e.g.,
+ *       `openssl rand -hex 24` in a terminal. Also put this exact value into
+ *       update_stores_sheet.py's SYNC_SECRET constant. This is what stops
+ *       anyone who finds the deployment URL from overwriting your store list
+ *       -- without it, "Anyone" access means anyone, not just your script.>
  *  4. Deploy -> New deployment -> Type: Web app.
  *       - Execute as: Me
  *       - Who has access: Anyone
@@ -68,13 +85,20 @@ function doPost(e) {
     }
 
     if (body.action === "markVisited") {
-      var email = requireAuth_(body.idToken);
-      upsertVisit_(body, email);
+      var user = requireTeamMember_(body.idToken);
+      requireOwnScope_(user, body.person, body.cm);
+      upsertVisit_(body);
       return jsonResponse_({ ok: true });
     }
 
     if (body.action === "syncStores") {
-      // local-only tool, not called from the hosted page -- see note at call site
+      // Only ever called from your own machine via update_stores_sheet.py, but
+      // unlike the other actions it can't go through the ID-token/Users-tab
+      // check -- it's not a person signing in, it's a script. It still needs
+      // SOME check, though: this deployment's URL sits in plain text in the
+      // public index.html, so without one, anyone who finds it could wipe and
+      // replace the entire store list with a single unauthenticated request.
+      requireSyncSecret_(body.secret);
       var count = syncStores_(body.stores || []);
       return jsonResponse_({ ok: true, count: count });
     }
@@ -89,10 +113,11 @@ function doGet(e) {
   try {
     var action = e.parameter.action;
     if (action === "getVisits") {
-      var email = requireAuth_(e.parameter.idToken);
+      var user = requireTeamMember_(e.parameter.idToken);
       var person = e.parameter.person || "";
       var date = e.parameter.date || "";
-      return jsonResponse_({ ok: true, visits: getVisits_(person, date, email) });
+      requireOwnScope_(user, person, null);
+      return jsonResponse_({ ok: true, visits: getVisits_(person, date) });
     }
     return jsonResponse_({ ok: true });
   } catch (err) {
@@ -106,6 +131,43 @@ function requireAuth_(idToken) {
   var email = verifyIdToken_(idToken);
   if (!email) throw new Error("not signed in");
   return email;
+}
+
+// Like requireAuth_, but also requires the verified email to actually be a row
+// in the Users tab -- markVisited/getVisits used to skip this (only myStores_
+// checked it), so any Google account, not just this team's, could write or
+// read visit records once it had a token for this app's client ID.
+function requireTeamMember_(idToken) {
+  var email = requireAuth_(idToken);
+  var user = lookupUser_(email);
+  if (!user) throw new Error("no_access: " + email + " is not in the Users tab");
+  user.email = email;
+  return user;
+}
+
+// admin/cm can act on anyone in their scope; an ae can only mark/read their
+// own visits. Without this, any signed-in team member could pass a different
+// person's name in the request body and write or read someone else's data --
+// the token only proves who's calling, not that they're allowed to touch the
+// record they're asking for.
+function requireOwnScope_(user, person, cm) {
+  if (user.role === "admin") return;
+  if (user.role === "cm") {
+    if (cm != null && cm !== user.cmName) throw new Error("forbidden: not your team");
+    return;
+  }
+  if (person !== user.personName) throw new Error("forbidden: not your own records");
+}
+
+// syncStores_ isn't a person signing in -- it's update_stores_sheet.py on your
+// own machine -- so it can't be checked against the Users tab. A shared
+// secret (set once as a Script Property, and passed by the python script) is
+// the minimum needed so this deployment's public URL alone isn't enough to
+// overwrite the store list.
+function requireSyncSecret_(secret) {
+  var expected = PropertiesService.getScriptProperties().getProperty("SYNC_SECRET");
+  if (!expected) throw new Error("SYNC_SECRET script property is not set -- see setup notes at the top of this file");
+  if (secret !== expected) throw new Error("forbidden: bad sync secret");
 }
 
 // Verifies the ID token directly against Google (not just trusting the client) and
@@ -259,6 +321,13 @@ function readAllStores_() {
 // trigger point for cleaning up old ones -- that keeps cleanup to at most once per
 // day rather than running on every single sync request.
 function getDaySheet_(dateStr, createIfMissing) {
+  // dateStr comes straight from the request body/query string. Without this
+  // check, a caller could pass date:"Users" (or "7-Eleven Stores", etc.) and
+  // this would happily fetch that REAL tab and let upsertVisit_ write a
+  // visit-shaped row into it -- wrong columns, live data corrupted. Every
+  // other value here is either the literal "*Stores" sync tabs or a genuine
+  // yyyy-mm-dd tab; nothing legitimate ever needs another shape.
+  if (!DATE_SHEET_RE.test(dateStr)) throw new Error("invalid date");
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(dateStr);
   if (!sheet && createIfMissing) {
@@ -276,7 +345,7 @@ function visitColIndex_() {
   return idx;
 }
 
-function upsertVisit_(body, callerEmail) {
+function upsertVisit_(body) {
   var dateStr =
     body.date ||
     Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
@@ -306,7 +375,7 @@ function upsertVisit_(body, callerEmail) {
   ]);
 }
 
-function getVisits_(person, dateStr, callerEmail) {
+function getVisits_(person, dateStr) {
   var sheet = getDaySheet_(dateStr, false);
   if (!sheet) return [];
   var idx = visitColIndex_();
@@ -354,9 +423,10 @@ function parseDate_(s) {
 
 // ---------- store master list sync (called only by the local python script) ----------
 // Full-refresh: fully overwrites the two tabs each run, never appended -- safe to
-// re-run any time, never builds up duplicates or stale rows. Deliberately NOT
-// behind the ID-token auth check -- it's only ever called from your own machine
-// via update_stores_sheet.py, never from the hosted page.
+// re-run any time, never builds up duplicates or stale rows. Not behind the
+// ID-token check (it's a script running on your machine, not a person signing
+// in) -- gated by requireSyncSecret_ instead, checked in doPost before this
+// is ever called.
 
 function syncStores_(stores) {
   var byType = {};

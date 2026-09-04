@@ -21,13 +21,22 @@ from pathlib import Path
 
 import openpyxl
 
-# Keep this in sync with the URL set via the "⚙ Sheets sync" button in the
-# Route Planner tool -- if you change one, change the other.
+# Keep this in sync with DEFAULT_SYNC_URL in index.html -- if you change one,
+# change the other.
 SYNC_URL = "https://script.google.com/macros/s/AKfycbxJQOlyXKHuqOXLFMFxRUuJ3z-I50OL8kkPiMz0uOKY4DqjK0WdVOmJBd1aUTuWaWMilA/exec"
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent
 SEVEN_ELEVEN_XLSX = DASHBOARD_DIR / "Google_MyMap_7-Eleven Database NTB.xlsx"
 RTR_XLSX = DASHBOARD_DIR / "Google_MyMap_RTR Database.xlsx"
+
+# Must match the SYNC_SECRET Script Property set in the Apps Script project.
+# Without this, syncStores had no auth at all -- anyone who found the
+# (public, embedded-in-index.html) deployment URL could overwrite the entire
+# store list with one request. Lives in a plain file next to the xlsx
+# sources, one level above this repo -- same as those, it's deliberately
+# never committed: this script and its repo are public on GitHub Pages, and a
+# secret checked into a public repo isn't a secret.
+SYNC_SECRET_FILE = DASHBOARD_DIR / "sync_secret.txt"
 
 
 def to_float(v):
@@ -111,13 +120,22 @@ def main():
         raise SystemExit(f"Not found: {SEVEN_ELEVEN_XLSX}")
     if not RTR_XLSX.exists():
         raise SystemExit(f"Not found: {RTR_XLSX}")
+    if not SYNC_SECRET_FILE.exists():
+        raise SystemExit(
+            f"Not found: {SYNC_SECRET_FILE}\n"
+            "Create it containing the same value as the SYNC_SECRET Script "
+            "Property in the Apps Script project, with no extra whitespace."
+        )
+    sync_secret = SYNC_SECRET_FILE.read_text(encoding="utf-8").strip()
 
     stores = extract_seven_eleven(SEVEN_ELEVEN_XLSX) + extract_rtr(RTR_XLSX)
     print(f"Parsed {len(stores)} stores "
           f"({sum(1 for s in stores if s['type']=='7-11')} 7-Eleven, "
           f"{sum(1 for s in stores if s['type']=='RTR')} RTR)")
 
-    payload = json.dumps({"action": "syncStores", "stores": stores}).encode("utf-8")
+    payload = json.dumps(
+        {"action": "syncStores", "stores": stores, "secret": sync_secret}
+    ).encode("utf-8")
     req = urllib.request.Request(
         SYNC_URL,
         data=payload,

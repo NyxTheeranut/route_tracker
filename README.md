@@ -51,7 +51,14 @@ Sheet. It's never called from the hosted page.
 2. **Extensions → Apps Script**, delete the starter code, paste in the full
    contents of `Sheets Sync - Apps Script Code.gs` from this repo.
 3. **Project Settings** (gear icon, left sidebar) → **Script Properties** →
-   add one: `OAUTH_CLIENT_ID` = the Client ID from step 1.
+   add two:
+   - `OAUTH_CLIENT_ID` = the Client ID from step 1.
+   - `SYNC_SECRET` = any random string, e.g. from `openssl rand -hex 24` in a
+     terminal. Gates the `syncStores` action (used only by
+     `update_stores_sheet.py`, see step 5) — without it, anyone who finds the
+     deployment URL could overwrite the entire store list with one request,
+     since that action can't go through the sign-in check the way everything
+     else does.
 4. **Deploy → New deployment**
    - Type: **Web app**
    - Execute as: **Me**
@@ -78,8 +85,12 @@ Sheet. It's never called from the hosted page.
 
 ### 5. Push the store list
 
-Run `update_stores_sheet.py` (or double-click `Update Store List.command` in
-the Dashboard folder) to populate the "7-Eleven Stores" / "RTR Stores" tabs.
+Create a file named `sync_secret.txt` next to (one level above) this repo —
+i.e. in the `Dashboard` folder — containing exactly the `SYNC_SECRET` value
+from step 2, no extra whitespace. **Never commit this file**; it lives
+outside the repo specifically so it can't be. Then run
+`update_stores_sheet.py` (or double-click `Update Store List.command` in the
+Dashboard folder) to populate the "7-Eleven Stores" / "RTR Stores" tabs.
 Re-run it any time the source xlsx files change.
 
 ### 6. Deploy to GitHub Pages
@@ -94,9 +105,17 @@ branch → `main` / `(root)`**. The page will be live at
   gate — every request carries a Google ID token, which the script verifies
   directly against Google (checking both the signature and that it was
   issued for *this* app's Client ID) before trusting the email in it.
-- An email not listed in the Users tab gets nothing back — not an empty
-  list, an explicit "not set up" response.
-- `update_stores_sheet.py`'s `syncStores` action isn't behind the auth
-  check — it's meant to run only from your own machine. Don't expose that
-  action's usage pattern (or this repo's Sheet URL) anywhere public beyond
-  what's already necessary.
+- A verified token proves who's calling, not that they're allowed to do what
+  they're asking. `markVisited` and `getVisits` additionally require the
+  email to be a row in the Users tab (not just any Google account — an
+  unrecognized email gets nothing back, an explicit "not set up" response,
+  same as `myStores`), and require the `person`/`cm` in the request to
+  actually be the caller's own (or their team's, for `cm`/`admin` roles) — an
+  `ae` can't read or write another salesperson's visit records by passing a
+  different name in the request.
+- `syncStores` can't go through that check at all — it's not a person
+  signing in, it's `update_stores_sheet.py` running on your own machine — so
+  it's gated by `SYNC_SECRET` instead (see step 2 and step 5 above). This
+  deployment's URL is not actually secret; it's embedded directly in the
+  public `index.html`, so without this, "Anyone" access would mean anyone on
+  the internet could overwrite the store list with one request.
