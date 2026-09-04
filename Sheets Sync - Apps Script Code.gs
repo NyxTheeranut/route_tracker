@@ -218,6 +218,13 @@ function readAllStores_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var out = [];
   ss.getSheets().forEach(function (sheet) {
+    // Only tabs syncStores_ actually writes ("7-Eleven Stores", "RTR Stores",
+    // "<type> Stores"). This used to scan EVERY tab and take anything with a
+    // matching column shape, which also swept up strays like a leftover
+    // "Sheet1" -- rows there with shifted columns showed up as bogus
+    // salespeople (a store name appearing as a person tab). Still checks the
+    // column shape below, so a "Stores" tab with the wrong columns is skipped.
+    if (!/stores$/i.test(sheet.getName().trim())) return;
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return;
     var idx = {};
