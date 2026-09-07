@@ -564,6 +564,35 @@
       .sync-status.err {
         color: var(--red);
       }
+      /* Route-plan sync + route-quality notices. Deliberately visible in the
+         panel rather than console-only: a plan that silently failed to save,
+         or that fell back to straight-line distances, looks identical to a
+         good one otherwise. */
+      .plan-notices:empty {
+        display: none;
+      }
+      .plan-notice {
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 5px 8px;
+        border-radius: 6px;
+        margin-bottom: 6px;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .plan-notice.ok {
+        color: var(--green);
+        background: color-mix(in srgb, var(--green) 12%, transparent);
+      }
+      .plan-notice.warn {
+        color: #92400e;
+        background: #fef3c7;
+      }
+      .plan-notice.muted {
+        color: var(--muted);
+        background: color-mix(in srgb, var(--muted) 12%, transparent);
+      }
       .checklist-row {
         cursor: default;
       }
@@ -1025,6 +1054,7 @@
               class="assign-banner"
               style="display: none"
             ></div>
+            <div id="planNotices" class="plan-notices"></div>
             <div id="manualHint" class="manual-hint" style="display: none">
               Click "Start manual route", then click store pins on the map (or
               tick them in the Stores list) to add them to the day. Click "Next day"
@@ -2538,6 +2568,7 @@
         activeDay: 0, // which day tab is focused
         confirmedDays: [], // per-day booleans -- true once that day's route is locked for visiting
         visited: {}, // store id -> true once ticked as visited (persists across rebuilds)
+        updatedAt: 0, // last local edit (ms) -- decides laptop vs phone on conflict
         useGps: false,
         gpsPos: null,
       };
@@ -2631,6 +2662,7 @@
         state.activeDay = 0;
         state.confirmedDays = [];
         state.visited = {};
+        state.updatedAt = 0;
         try {
           const raw = localStorage.getItem(storageKey());
           if (raw) {
@@ -2657,6 +2689,7 @@
               saved.visited && typeof saved.visited === "object"
                 ? saved.visited
                 : {};
+            state.updatedAt = saved.updatedAt || 0;
           }
         } catch (e) {
           console.warn("could not load saved route", e);
@@ -2667,23 +2700,36 @@
           c.classList.toggle("active", c.dataset.mode === state.dayMode);
         });
       }
-      function saveRouteState() {
+      function planPayload() {
+        return {
+          order: state.order,
+          perDay: state.perDay,
+          dayMode: state.dayMode,
+          dayChunks: state.dayChunks,
+          activeDay: state.activeDay,
+          confirmedDays: state.confirmedDays,
+          visited: state.visited,
+          updatedAt: state.updatedAt || 0,
+        };
+      }
+
+      // Local write only. Split out from saveRouteState so applying a plan
+      // pulled FROM the server can persist it without immediately pushing the
+      // same thing back and fighting itself.
+      function writeRouteStateLocal() {
         try {
-          localStorage.setItem(
-            storageKey(),
-            JSON.stringify({
-              order: state.order,
-              perDay: state.perDay,
-              dayMode: state.dayMode,
-              dayChunks: state.dayChunks,
-              activeDay: state.activeDay,
-              confirmedDays: state.confirmedDays,
-              visited: state.visited,
-            }),
-          );
+          localStorage.setItem(storageKey(), JSON.stringify(planPayload()));
         } catch (e) {
           console.warn("could not save route", e);
         }
+      }
+
+      function saveRouteState() {
+        // Stamped here, at the one point local state actually changes -- it's
+        // what decides whose copy wins when the phone and the laptop disagree.
+        state.updatedAt = Date.now();
+        writeRouteStateLocal();
+        scheduleCloudPush();
       }
 
       // ---------- map ----------
@@ -3602,8 +3648,139 @@
         gmapsBtn.disabled = activeIds.length === 0;
       }
 
+      // ---------- split stores into days (cluster first, route second) ----------
+      // The old approach built ONE long tour across every store and sliced it
+      // into equal chunks. That optimizes a single continuous path -- but the
+      // rep drives a separate round trip from base each day, so day 2 began
+      // wherever day 1 happened to stop, which only makes sense if they slept
+      // there. Grouping geographically first and routing each day on its own
+      // matches how the work actually happens.
+      //
+      // It also fixes a silent quality bug: OSRM's table service caps at 100
+      // coordinates, so asking for one matrix over every store quietly failed
+      // above that and fell back to straight-line distance -- exactly when
+      // road distance matters most, since the territory is cut by the river.
+      // Per-day matrices are bounded by perDay (max 60), so they always fit.
+      //
+      // Straight-line is fine for deciding WHICH day a store belongs to (road
+      // vs. crow-flies barely changes which cluster is nearest); road distance
+      // is what matters for ordering stops within a day, and that's where it's
+      // still used.
+      function clusterIntoDays(points, perDay) {
+        const k = Math.max(1, Math.ceil(points.length / perDay));
+        if (k === 1) return [points.slice()];
+
+        // Equirectangular projection to flat km, so plain Euclidean maths is
+        // valid. One reference latitude for the whole set, otherwise x isn't a
+        // consistent axis.
+        const meanLat =
+          points.reduce((s, p) => s + p.lat, 0) / points.length;
+        const kx = Math.cos((meanLat * Math.PI) / 180) * 111.32;
+        const ky = 110.57;
+        const pts = points.map((p) => ({
+          p,
+          x: p.lng * kx,
+          y: p.lat * ky,
+        }));
+        const d2 = (a, c) => (a.x - c.x) ** 2 + (a.y - c.y) ** 2;
+
+        // Farthest-point seeding: deterministic (no random restarts to make
+        // the same input produce different plans run to run) and spreads the
+        // initial centroids out instead of clumping them.
+        const centroids = [pts[0]];
+        while (centroids.length < k) {
+          let best = null,
+            bestD = -1;
+          for (const a of pts) {
+            let nearest = Infinity;
+            for (const c of centroids) nearest = Math.min(nearest, d2(a, c));
+            if (nearest > bestD) {
+              bestD = nearest;
+              best = a;
+            }
+          }
+          centroids.push({ x: best.x, y: best.y });
+        }
+
+        let assign = new Array(pts.length).fill(0);
+        for (let iter = 0; iter < 24; iter++) {
+          // Capacity-constrained assignment. Plain k-means would happily put
+          // 30 stores in one day and 2 in another; perDay is a real limit, so
+          // points are placed in order of REGRET (how much worse their
+          // second-choice day is than their first). Points that strongly care
+          // which day they land on get to choose before the ones that don't.
+          const order = pts
+            .map((a, i) => {
+              const ds = centroids.map((c) => d2(a, c)).sort((m, n) => m - n);
+              return { i, regret: (ds[1] ?? ds[0]) - ds[0] };
+            })
+            .sort((m, n) => n.regret - m.regret);
+
+          const counts = new Array(k).fill(0);
+          const next = new Array(pts.length).fill(-1);
+          for (const { i } of order) {
+            let best = -1,
+              bestD = Infinity;
+            for (let c = 0; c < k; c++) {
+              if (counts[c] >= perDay) continue;
+              const d = d2(pts[i], centroids[c]);
+              if (d < bestD) {
+                bestD = d;
+                best = c;
+              }
+            }
+            if (best < 0) {
+              // Every day full (only possible from rounding) -- take nearest.
+              for (let c = 0; c < k; c++) {
+                const d = d2(pts[i], centroids[c]);
+                if (d < bestD) {
+                  bestD = d;
+                  best = c;
+                }
+              }
+            }
+            next[i] = best;
+            counts[best]++;
+          }
+
+          const settled = next.every((v, i) => v === assign[i]);
+          assign = next;
+          if (settled) break;
+
+          for (let c = 0; c < k; c++) {
+            const members = pts.filter((_, i) => assign[i] === c);
+            if (!members.length) continue;
+            centroids[c] = {
+              x: members.reduce((s, m) => s + m.x, 0) / members.length,
+              y: members.reduce((s, m) => s + m.y, 0) / members.length,
+            };
+          }
+        }
+
+        const clusters = Array.from({ length: k }, () => []);
+        assign.forEach((c, i) => clusters[c].push(pts[i].p));
+        return clusters.filter((c) => c.length);
+      }
+
+      // Which cluster becomes Day 1, Day 2, ...? Ordering them by a TSP over
+      // their own centroids makes the week progress across the territory
+      // instead of criss-crossing it.
+      function orderClusters(clusters, startPoint) {
+        if (clusters.length < 2) return clusters;
+        const centroids = clusters.map((c, i) => ({
+          i,
+          lat: c.reduce((s, p) => s + p.lat, 0) / c.length,
+          lng: c.reduce((s, p) => s + p.lng, 0) / c.length,
+        }));
+        const seq = computeOptimizedTour(centroids, startPoint, haversine);
+        return seq.map((c) => clusters[c.i]);
+      }
+
       // ---------- optimize (nearest neighbour + 2-opt) ----------
-      function computeOptimizedTour(points, startPoint, distFn) {
+      // roundTrip: cost the leg back to startPoint too. A rep goes home at the
+      // end of the day, so leaving it out under-costs routes that finish far
+      // from base and never come back.
+      function computeOptimizedTour(points, startPoint, distFn, roundTrip) {
         distFn = distFn || haversine;
         if (points.length === 0) return [];
         const remaining = points.slice();
@@ -3632,8 +3809,14 @@
           const full = startPoint ? [startPoint, ...t] : t;
           for (let i = 0; i < full.length - 1; i++)
             total += distFn(full[i], full[i + 1]);
+          if (roundTrip && startPoint && t.length)
+            total += distFn(t[t.length - 1], startPoint);
           return total;
         }
+        // On a round trip the slot after the last stop isn't "nothing", it's
+        // the drive home -- so Or-opt has to cost that edge too, or it'll
+        // happily park an out-of-the-way store at the end for free.
+        const tailAnchor = roundTrip && startPoint ? startPoint : null;
 
         // Reverses whichever segment [i..j] shortens the tour most -- fixes routes that
         // cross over themselves.
@@ -3666,7 +3849,7 @@
             for (let i = 0; i <= t.length - segLen; i++) {
               const segment = t.slice(i, i + segLen);
               const prev = i > 0 ? t[i - 1] : startPoint;
-              const next = i + segLen < t.length ? t[i + segLen] : null;
+              const next = i + segLen < t.length ? t[i + segLen] : tailAnchor;
               let removalGain = 0;
               if (prev) removalGain += distFn(prev, segment[0]);
               if (next) removalGain += distFn(segment[segLen - 1], next);
@@ -3675,7 +3858,7 @@
               const rest = t.slice(0, i).concat(t.slice(i + segLen));
               for (let j = 0; j <= rest.length; j++) {
                 const a = j > 0 ? rest[j - 1] : startPoint;
-                const b = j < rest.length ? rest[j] : null;
+                const b = j < rest.length ? rest[j] : tailAnchor;
                 if (a === prev && b === next) continue; // same spot it's already in
                 const baseEdge = a && b ? distFn(a, b) : 0;
                 const variants =
@@ -3719,16 +3902,28 @@
       const OSRM_TABLE_BASE =
         "https://router.project-osrm.org/table/v1/driving/";
 
-      async function fetchDistanceMatrix(points) {
+      // OSRM's public table service refuses more than 100 coordinates
+      // ("TooBig"). Nothing should reach here above that -- days are capped by
+      // perDay -- but it's asserted rather than assumed, because exceeding it
+      // used to degrade the whole plan to straight-line silently.
+      const OSRM_TABLE_MAX = 100;
+
+      async function fetchDurationMatrix(points) {
         if (points.length < 2) return null;
+        if (points.length > OSRM_TABLE_MAX) {
+          console.warn(
+            `OSRM table limit is ${OSRM_TABLE_MAX} coords, asked for ${points.length}`,
+          );
+          return null;
+        }
         const coordStr = points.map((p) => `${p.lng},${p.lat}`).join(";");
-        const url = `${OSRM_TABLE_BASE}${coordStr}?annotations=distance`;
+        const url = `${OSRM_TABLE_BASE}${coordStr}?annotations=duration`;
         try {
           const res = await fetch(url);
           if (!res.ok) return null;
           const data = await res.json();
-          if (data.code !== "Ok" || !data.distances) return null;
-          return data.distances; // meters, NxN, index-aligned to `points`
+          if (data.code !== "Ok" || !data.durations) return null;
+          return data.durations; // seconds, NxN, index-aligned to `points`
         } catch (e) {
           console.warn(
             "OSRM table fetch failed, optimizing on straight-line distance instead",
@@ -3738,6 +3933,20 @@
         }
       }
 
+      // Everything the optimizer compares is in MINUTES, whichever source it
+      // came from, so the two can't be mixed up. Driving time beats raw
+      // distance as the objective -- 3km along a main road is a shorter day
+      // than 2km of back lanes.
+      const FALLBACK_KMH = 25; // urban average, only used when OSRM is unavailable
+      function haversineMinutes(a, b) {
+        return (haversine(a, b) / FALLBACK_KMH) * 60;
+      }
+
+      // Did the last build have to fall back to straight-line for any day?
+      // Surfaced in the UI rather than left in the console -- a silently
+      // degraded plan looks identical to a good one.
+      let lastBuildUsedFallback = false;
+
       // Builds a distance function backed by a real driving-distance matrix, so the
       // optimizer orders stops by actual road distance instead of as-the-crow-flies --
       // which matters a lot here, since the territory is cut by the river/canals and two
@@ -3746,17 +3955,20 @@
       // missing an entry.
       async function getDistFn(points, startPoint) {
         const all = startPoint ? [startPoint, ...points] : points;
-        if (all.length < 2) return haversine;
-        const matrix = await fetchDistanceMatrix(all);
-        if (!matrix) return haversine;
+        if (all.length < 2) return haversineMinutes;
+        const matrix = await fetchDurationMatrix(all);
+        if (!matrix) {
+          lastBuildUsedFallback = true;
+          return haversineMinutes;
+        }
         const indexOf = new Map();
         all.forEach((p, i) => indexOf.set(p, i));
         return function (a, b) {
           const ia = indexOf.get(a),
             ib = indexOf.get(b);
-          if (ia == null || ib == null) return haversine(a, b);
+          if (ia == null || ib == null) return haversineMinutes(a, b);
           const d = matrix[ia][ib];
-          return d == null ? haversine(a, b) : d / 1000; // meters -> km, same unit as haversine
+          return d == null ? haversineMinutes(a, b) : d / 60; // seconds -> minutes
         };
       }
 
@@ -3882,6 +4094,182 @@
         }
       }
 
+      // ---------- route plan sync (so a plan follows you laptop -> phone) ----------
+      // localStorage stays the working copy: instant, and it still works with
+      // no signal, which matters when the plan is being run in the field. The
+      // Sheet is the copy that travels between devices. Writes that fail are
+      // kept and retried rather than lost -- going through a dead spot must
+      // never cost someone their day's work.
+      const cloudSync = {
+        timer: null,
+        dirty: false, // local edits the server hasn't accepted yet
+        inFlight: false,
+        lastPlanJson: null, // don't re-send an identical plan
+        status: "", // "", "saving", "saved", "offline"
+      };
+
+      function planSummary() {
+        const days = state.dayChunks
+          ? state.dayChunks.length
+          : state.order.length
+            ? 1
+            : 0;
+        const confirmed = state.confirmedDays.filter(Boolean).length;
+        const visited = Object.keys(state.visited).filter(
+          (k) => state.visited[k],
+        ).length;
+        return `${days} day(s) · ${state.order.length} stores · ${confirmed} confirmed · ${visited} visited`;
+      }
+
+      function renderPlanNotices() {
+        const el = document.getElementById("planNotices");
+        if (!el) return;
+        const parts = [];
+        if (lastBuildUsedFallback) {
+          parts.push(
+            '<div class="plan-notice warn">⚠ Straight-line estimate — live road distances were unavailable, so this order may not reflect real driving time.</div>',
+          );
+        }
+        if (cloudSync.status === "offline") {
+          parts.push(
+            '<div class="plan-notice warn">⚠ Saved on this device only — couldn\'t reach the server. It\'ll sync automatically when you\'re back online.</div>',
+          );
+        } else if (cloudSync.status === "saving") {
+          parts.push('<div class="plan-notice muted">Saving plan…</div>');
+        } else if (cloudSync.status === "saved") {
+          parts.push(
+            '<div class="plan-notice ok">✓ Plan saved — it\'ll be here on your other devices too.</div>',
+          );
+        }
+        el.innerHTML = parts.join("");
+      }
+
+      function setPlanSyncStatus(s) {
+        cloudSync.status = s;
+        renderPlanNotices();
+      }
+
+      function scheduleCloudPush() {
+        if (!idToken) return;
+        cloudSync.dirty = true;
+        clearTimeout(cloudSync.timer);
+        // Debounced: during a manual assign session saveRouteState fires on
+        // every single click. Coalesce those into one request instead of
+        // hammering the Apps Script quota.
+        cloudSync.timer = setTimeout(pushRouteToCloud, 2500);
+      }
+
+      async function pushRouteToCloud() {
+        if (!idToken || cloudSync.inFlight) return;
+        const url = getSyncUrl();
+        if (!url) return;
+        const json = JSON.stringify(planPayload());
+        if (json === cloudSync.lastPlanJson) {
+          cloudSync.dirty = false;
+          return;
+        }
+        cloudSync.inFlight = true;
+        setPlanSyncStatus("saving");
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({
+              action: "saveRoute",
+              idToken: idToken,
+              plan: json,
+              summary: planSummary(),
+            }),
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const data = await res.json();
+          // Apps Script returns 200 even when it rejected the write, so the
+          // body is what actually says whether it saved -- same trap that made
+          // visit ticks look synced when they weren't.
+          if (!data.ok) throw new Error(data.error || "rejected by server");
+          cloudSync.lastPlanJson = json;
+          cloudSync.dirty = false;
+          setPlanSyncStatus("saved");
+        } catch (e) {
+          console.warn("route plan sync failed (kept locally):", e);
+          setPlanSyncStatus("offline"); // stays dirty, so it retries
+          requestTokenRefresh();
+        } finally {
+          cloudSync.inFlight = false;
+        }
+      }
+
+      function applyCloudPlan(plan) {
+        state.order = (plan.order || []).filter((id) => storeById(id));
+        state.checked = new Set(state.order);
+        state.perDay = plan.perDay || 8;
+        state.dayMode = plan.dayMode === "manual" ? "manual" : "auto";
+        const chunks = Array.isArray(plan.dayChunks)
+          ? plan.dayChunks.map((c) => c.filter((id) => storeById(id)))
+          : null;
+        state.dayChunks = chunks && chunks.length ? chunks : null;
+        state.activeDay = plan.activeDay || 0;
+        clampActiveDay();
+        state.confirmedDays = Array.isArray(plan.confirmedDays)
+          ? plan.confirmedDays
+          : [];
+        state.visited =
+          plan.visited && typeof plan.visited === "object" ? plan.visited : {};
+        state.updatedAt = plan.updatedAt || Date.now();
+        // Local write only, and record what the server already has, so
+        // adopting the server's plan doesn't immediately push it straight back.
+        writeRouteStateLocal();
+        cloudSync.lastPlanJson = JSON.stringify(planPayload());
+        cloudSync.dirty = false;
+        const perDayInput = document.getElementById("perDayInput");
+        if (perDayInput) perDayInput.value = state.perDay;
+        document.querySelectorAll("#dayModeToggle .chip").forEach((c) => {
+          c.classList.toggle("active", c.dataset.mode === state.dayMode);
+        });
+        renderList();
+        renderRoutePanel();
+      }
+
+      async function pullRouteFromCloud() {
+        if (!idToken) return;
+        const url = getSyncUrl();
+        if (!url) return;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({ action: "loadRoute", idToken: idToken }),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!data.ok || !data.plan) return;
+          const cloud = JSON.parse(data.plan);
+          // Last edit wins. Conflicts are rare because one person owns their
+          // own plan, and visit ticks live in a separate daily tab so a plan
+          // save can never clobber them.
+          if ((cloud.updatedAt || 0) <= (state.updatedAt || 0)) return;
+          applyCloudPlan(cloud);
+        } catch (e) {
+          console.warn("could not load saved plan from the server", e);
+        }
+      }
+
+      // Retry paths for a push that failed offline. The plan is safe in
+      // localStorage the whole time; these just get it to the server whenever
+      // there's a connection again.
+      window.addEventListener("online", () => {
+        if (cloudSync.dirty) pushRouteToCloud();
+      });
+      setInterval(() => {
+        if (cloudSync.dirty) pushRouteToCloud();
+      }, 60 * 1000);
+      document.addEventListener("visibilitychange", () => {
+        // Leaving the tab/app is exactly when an unsaved plan would be lost,
+        // so flush rather than wait out the debounce.
+        if (document.visibilityState === "hidden" && cloudSync.dirty)
+          pushRouteToCloud();
+      });
+
       // Pulls today's visits for the current person from the Sheet -- picks up ticks made
       // from another device/session so this view doesn't silently disagree with the Sheet.
       async function pullVisitsForToday() {
@@ -3916,6 +4304,7 @@
         const originalLabel = buildBtn.textContent;
         buildBtn.disabled = true;
         buildBtn.textContent = "Optimizing…";
+        lastBuildUsedFallback = false;
 
         try {
           if (state.dayMode === "manual") {
@@ -3928,23 +4317,26 @@
               // re-optimize the driving ORDER within each existing day; never touches
               // which day a store is on -- that's entirely the user's call in this mode.
               // one matrix fetch covers every day's stops so this is a single round trip.
-              const allPts = state.dayChunks
-                .flat()
-                .map(storeById)
-                .filter(Boolean);
-              const distFn = await getDistFn(allPts, startPoint);
-              state.dayChunks = state.dayChunks.map((chunk, i) => {
+              // One matrix PER DAY, not one across every day: each day is its
+              // own round trip, and a single matrix over everything blows past
+              // OSRM's 100-coordinate cap and silently degrades the lot.
+              const reordered = [];
+              for (const chunk of state.dayChunks) {
                 const chunkPts = chunk.map(storeById).filter(Boolean);
-                const ordered =
-                  chunkPts.length > 1
-                    ? computeOptimizedTour(
-                        chunkPts,
-                        i === 0 ? startPoint : null,
-                        distFn,
-                      )
-                    : chunkPts;
-                return ordered.map((p) => p.id);
-              });
+                if (chunkPts.length <= 1) {
+                  reordered.push(chunkPts.map((p) => p.id));
+                  continue;
+                }
+                const distFn = await getDistFn(chunkPts, startPoint);
+                const ordered = computeOptimizedTour(
+                  chunkPts,
+                  startPoint,
+                  distFn,
+                  true,
+                );
+                reordered.push(ordered.map((p) => p.id));
+              }
+              state.dayChunks = reordered;
             }
             state.order = state.dayChunks.flat();
           } else {
@@ -3957,21 +4349,30 @@
             perDayInput.value = perDay;
             state.perDay = perDay;
 
-            const distFn = await getDistFn(pts, startPoint);
-            const masterTour = computeOptimizedTour(pts, startPoint, distFn);
-            const days = Math.max(1, Math.ceil(masterTour.length / perDay));
-            const chunks = [];
-            for (let d = 0; d < days; d++)
-              chunks.push(masterTour.slice(d * perDay, (d + 1) * perDay));
-            const polished = chunks.map((chunk, i) =>
-              chunk.length > 1
-                ? computeOptimizedTour(
-                    chunk,
-                    i === 0 ? startPoint : null,
-                    distFn,
-                  )
-                : chunk,
+            // Cluster into days on straight-line distance (plenty accurate for
+            // deciding which day a store belongs to), then order the days so
+            // the week progresses across the territory rather than zig-zagging.
+            const clusters = orderClusters(
+              clusterIntoDays(pts, perDay),
+              startPoint,
             );
+
+            // Then route each day on real road TIME, as its own round trip
+            // from base. Each day is at most perDay (<= 60) stops, so the
+            // matrix request always fits inside OSRM's 100-coordinate cap --
+            // which is what stops the whole thing quietly reverting to
+            // straight-line on a big plan.
+            const polished = [];
+            for (const chunk of clusters) {
+              if (chunk.length <= 1) {
+                polished.push(chunk);
+                continue;
+              }
+              const distFn = await getDistFn(chunk, startPoint);
+              polished.push(
+                computeOptimizedTour(chunk, startPoint, distFn, true),
+              );
+            }
             state.dayChunks = polished.map((chunk) => chunk.map((p) => p.id));
             state.order = state.dayChunks.flat();
             state.activeDay = 0;
@@ -3979,6 +4380,7 @@
           saveRouteState();
           renderList();
           renderRoutePanel(); // restores the correct button label for the new state
+          renderPlanNotices(); // may now be warning about a straight-line fallback
         } catch (e) {
           console.warn("buildRoute failed", e);
           buildBtn.disabled =
@@ -4378,6 +4780,9 @@
           initApp();
           appInitialized = true;
           scheduleTokenRefresh();
+          // After initApp has loaded whatever this device had cached, so the
+          // two can be compared and the newer one kept.
+          pullRouteFromCloud();
         } catch (e) {
           idToken = null;
           document.getElementById("gsiButton").style.display = "flex";

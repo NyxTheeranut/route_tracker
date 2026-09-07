@@ -20,6 +20,9 @@
  *   sample row.
  * Daily tabs (e.g. "2026-09-03") -- one per day, visit check-off history. See
  *   getDaySheet_ below. Tabs older than RETENTION_DAYS are deleted automatically.
+ * "Routes" -- the current route plan per person, so it follows them from
+ *   laptop to phone. One row per email, overwritten in place (see the
+ *   route plans section below for why it's shaped that way).
  *
  * ── Auth ───────────────────────────────────────────────────────────────────
  * The page signs the user in with Google Identity Services and sends the
@@ -38,6 +41,11 @@
  *                              then requireOwnScope_ requires the person/cm in
  *                              the request to actually be the caller's own
  *                              (or their team's, for cm/admin).
+ *   saveRoute / loadRoute   -> same Users-tab membership, then keyed entirely
+ *                              by the VERIFIED email from the token. These
+ *                              take no person/cm from the request at all, so
+ *                              unlike markVisited there's no client-supplied
+ *                              identity to validate in the first place.
  *   syncStores              -> not a person signing in at all (it's
  *                              update_stores_sheet.py on your machine), so it
  *                              can't go through the Users tab -- gated by a
@@ -89,6 +97,22 @@ function doPost(e) {
       requireOwnScope_(user, body.person, body.cm);
       upsertVisit_(body);
       return jsonResponse_({ ok: true });
+    }
+
+    // The route plan itself, so it survives changing device (plan on the
+    // laptop, run it from the phone). Keyed by the VERIFIED email off the
+    // token -- never by a name from the request body, and never by
+    // person_name, which is blank for admins and would collide. Nothing in
+    // the request identifies the caller, so there's nothing to spoof.
+    if (body.action === "saveRoute") {
+      var routeUser = requireTeamMember_(body.idToken);
+      saveRoute_(routeUser.email, body.plan, body.summary);
+      return jsonResponse_({ ok: true });
+    }
+
+    if (body.action === "loadRoute") {
+      var loadUser = requireTeamMember_(body.idToken);
+      return jsonResponse_({ ok: true, plan: loadRoute_(loadUser.email) });
     }
 
     if (body.action === "syncStores") {
@@ -313,6 +337,65 @@ function readAllStores_() {
     }
   });
   return out;
+}
+
+// ---------- route plans (one row per person, overwritten in place) ----------
+// Deliberately ONE ROW PER PERSON, with the whole plan as JSON in a single
+// cell, rather than a row per store per day. Finishing a route consumes the
+// plan instead of producing history: 10 salespeople is 10 rows in week 1 and
+// still 10 rows in week 500, so there's no growth and nothing to clean up.
+// The permanent record of what actually happened is the daily visit tabs --
+// that's a separate job, and it already has its own retention. A row-per-store
+// design would add ~90 rows per person per week and need a second cleanup job
+// fighting it.
+var ROUTES_HEADER = ["email", "updatedAt", "summary", "planJson"];
+// Sheets caps a cell at 50k characters; leave headroom rather than failing at
+// the boundary. A 400-store plan is ~8k, so this is far from binding.
+var MAX_PLAN_CHARS = 45000;
+
+function routesSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("Routes");
+  if (!sheet) {
+    sheet = ss.insertSheet("Routes");
+    sheet.appendRow(ROUTES_HEADER);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function saveRoute_(email, planJson, summary) {
+  if (typeof planJson !== "string") throw new Error("plan must be a JSON string");
+  if (planJson.length > MAX_PLAN_CHARS) throw new Error("plan too large");
+  var sheet = routesSheet_();
+  var data = sheet.getDataRange().getValues();
+  var row = [email, new Date(), summary || "", planJson];
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim().toLowerCase() === email.toLowerCase()) {
+      writeRouteRow_(sheet, i + 1, row);
+      return;
+    }
+  }
+  writeRouteRow_(sheet, data.length + 1, row);
+}
+
+function writeRouteRow_(sheet, rowNum, row) {
+  var range = sheet.getRange(rowNum, 1, 1, ROUTES_HEADER.length);
+  // Same lesson as writeStoreSheet_: format as plain text BEFORE writing, so
+  // Sheets can't reinterpret any part of the JSON payload as a date/number.
+  range.setNumberFormat("@");
+  range.setValues([row]);
+}
+
+function loadRoute_(email) {
+  var sheet = routesSheet_();
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim().toLowerCase() === email.toLowerCase()) {
+      return String(data[i][3] || "");
+    }
+  }
+  return "";
 }
 
 // ---------- daily visit tabs ----------
