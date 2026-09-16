@@ -325,8 +325,13 @@ function readAllStores_() {
         type: type,
         code: String(row[idx.code]),
         name: row[idx.name],
-        person: row[idx.person],
-        cm: row[idx.cm],
+        // Trimmed to match lookupUser_'s personName/cmName exactly -- without this, a stray
+        // trailing space in the source xlsx (invisible in a spreadsheet cell) makes the === match
+        // in myStores_ fail for every single store, silently. That's the whole reason a CM/AE can
+        // sign in fine but see zero stores with no error: the comparison never throws, it just
+        // never matches.
+        person: String(row[idx.person] || "").trim(),
+        cm: String(row[idx.cm] || "").trim(),
         status: row[idx.status],
         district: row[idx.district],
         subdistrict: row[idx.subdistrict],
