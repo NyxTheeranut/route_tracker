@@ -3333,7 +3333,18 @@
           frag.appendChild(row);
         });
         storeListEl.appendChild(frag);
-        renderMarkers(list);
+        // Stores already checked into the route must stay visible on the map regardless of
+        // what's currently typed in search -- otherwise renderMarkers (which clears every
+        // marker and redraws only what it's given) silently wipes the pin for a store still
+        // in state.checked/state.order/dayChunks the moment a new search text stops matching
+        // it, even though the route itself is untouched. The route line is drawn separately
+        // from state.order, so without this it kept drawing through points with no visible pin.
+        const mapById = new Map(list.map((s) => [s.id, s]));
+        state.checked.forEach((id) => {
+          const s = storeById(id);
+          if (s) mapById.set(id, s);
+        });
+        renderMarkers([...mapById.values()]);
         updateRouteLine();
       }
 
