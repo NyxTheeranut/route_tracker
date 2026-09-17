@@ -483,10 +483,26 @@
         color: var(--muted);
         margin-bottom: 8px;
       }
-      #routePanel .rp-days-config input {
+      #routePanel .rp-days-config input[type="number"] {
         width: 52px;
         text-align: center;
         padding: 5px 4px;
+      }
+      #routePanel .no-split-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #routePanel #perDayRow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #routePanel #perDayRow.disabled {
+        opacity: 0.4;
+        pointer-events: none;
       }
       .manual-hint {
         font-size: 10.5px;
@@ -999,15 +1015,21 @@
           <div class="rp-head">
             <h2>Route plan — <span id="routeCount">0</span> stops</h2>
             <div class="rp-days-config">
-              Up to
-              <input
-                type="number"
-                id="perDayInput"
-                min="1"
-                max="60"
-                value="8"
-              />
-              stores per day
+              <label class="no-split-row">
+                <input type="checkbox" id="noSplitToggle" />
+                No day split — one list
+              </label>
+              <span id="perDayRow">
+                Up to
+                <input
+                  type="number"
+                  id="perDayInput"
+                  min="1"
+                  max="60"
+                  value="8"
+                />
+                stores per day
+              </span>
             </div>
             <div
               class="chip-toggle"
@@ -2563,6 +2585,7 @@
         checked: new Set(), // store ids ticked for the plan
         order: [], // flat ordered list of checked ids (used when no day-split yet)
         perDay: 8, // auto-split target: max stores per day (day count is derived from this)
+        noSplit: false, // auto mode, "no day split" checked -- Build route makes one flat list
         dayMode: "auto", // 'auto' = algorithm decides day groupings, 'manual' = user assigns
         dayChunks: null, // array of arrays of store ids, one per day, after "Build route"
         activeDay: 0, // which day tab is focused
@@ -2653,10 +2676,22 @@
       }
 
       // ---------- persistence ----------
+      // Keeps the checkbox and the (now-irrelevant-while-checked) per-day field in sync with
+      // state.noSplit -- called from every place that restores state from storage rather than
+      // from a live checkbox click (load, cloud pull), so those don't leave the UI showing the
+      // previous session's checkbox state.
+      function syncNoSplitUi() {
+        const toggle = document.getElementById("noSplitToggle");
+        const perDayRow = document.getElementById("perDayRow");
+        if (toggle) toggle.checked = state.noSplit;
+        if (perDayRow) perDayRow.classList.toggle("disabled", state.noSplit);
+      }
+
       function loadRouteState() {
         state.checked = new Set();
         state.order = [];
         state.perDay = 8;
+        state.noSplit = false;
         state.dayMode = "auto";
         state.dayChunks = null;
         state.activeDay = 0;
@@ -2670,6 +2705,7 @@
             state.order = (saved.order || []).filter((id) => storeById(id));
             state.checked = new Set(state.order);
             state.perDay = saved.perDay || 8;
+            state.noSplit = !!saved.noSplit;
             state.dayMode = saved.dayMode === "manual" ? "manual" : "auto";
             if (Array.isArray(saved.dayChunks)) {
               const chunks = saved.dayChunks.map((chunk) =>
@@ -2696,6 +2732,7 @@
         }
         const perDayInput = document.getElementById("perDayInput");
         if (perDayInput) perDayInput.value = state.perDay;
+        syncNoSplitUi();
         document.querySelectorAll("#dayModeToggle .chip").forEach((c) => {
           c.classList.toggle("active", c.dataset.mode === state.dayMode);
         });
@@ -2704,6 +2741,7 @@
         return {
           order: state.order,
           perDay: state.perDay,
+          noSplit: state.noSplit,
           dayMode: state.dayMode,
           dayChunks: state.dayChunks,
           activeDay: state.activeDay,
@@ -4214,6 +4252,7 @@
         state.order = (plan.order || []).filter((id) => storeById(id));
         state.checked = new Set(state.order);
         state.perDay = plan.perDay || 8;
+        state.noSplit = !!plan.noSplit;
         state.dayMode = plan.dayMode === "manual" ? "manual" : "auto";
         const chunks = Array.isArray(plan.dayChunks)
           ? plan.dayChunks.map((c) => c.filter((id) => storeById(id)))
@@ -4234,6 +4273,7 @@
         cloudSync.dirty = false;
         const perDayInput = document.getElementById("perDayInput");
         if (perDayInput) perDayInput.value = state.perDay;
+        syncNoSplitUi();
         document.querySelectorAll("#dayModeToggle .chip").forEach((c) => {
           c.classList.toggle("active", c.dataset.mode === state.dayMode);
         });
@@ -4360,11 +4400,17 @@
             perDayInput.value = perDay;
             state.perDay = perDay;
 
+            // "No day split" -- clusterIntoDays computes k = ceil(count/perDay), so passing
+            // pts.length as the effective cap forces k=1 (one cluster, everyone in it) without
+            // needing a separate code path. The real perDay setting is left untouched in
+            // state/the input box, so unchecking this later goes right back to it.
+            const clusterCap = state.noSplit ? Math.max(1, pts.length) : perDay;
+
             // Cluster into days on straight-line distance (plenty accurate for
             // deciding which day a store belongs to), then order the days so
             // the week progresses across the territory rather than zig-zagging.
             const clusters = orderClusters(
-              clusterIntoDays(pts, perDay),
+              clusterIntoDays(pts, clusterCap),
               startPoint,
             );
 
@@ -4630,6 +4676,16 @@
           }
         });
       });
+
+      document
+        .getElementById("noSplitToggle")
+        .addEventListener("change", (e) => {
+          state.noSplit = e.target.checked;
+          syncNoSplitUi();
+          saveRouteState();
+          // Takes effect on the next Build route, same as changing the per-day number does --
+          // doesn't retroactively re-split/merge a plan that's already built.
+        });
 
       document
         .getElementById("prevDayBtn")
