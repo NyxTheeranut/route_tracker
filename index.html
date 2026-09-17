@@ -133,6 +133,30 @@
         flex-direction: column;
         gap: 2px;
       }
+      .search-wrap {
+        position: relative;
+        display: flex;
+      }
+      .search-wrap input {
+        width: 100%;
+        padding-right: 24px;
+      }
+      #searchClearBtn {
+        position: absolute;
+        right: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1;
+        padding: 4px 6px;
+        cursor: pointer;
+      }
+      #searchClearBtn:hover {
+        color: var(--text);
+      }
       .field label {
         font-size: 10px;
         color: var(--muted);
@@ -698,6 +722,32 @@
         gap: 8px;
         padding: 8px 12px;
         border-bottom: 1px solid #f0f1f4;
+        background: var(--panel);
+        position: relative;
+      }
+      .route-row.dragging {
+        z-index: 10;
+        box-shadow: var(--shadow);
+        border-radius: var(--radius);
+        opacity: 0.95;
+      }
+      .drag-handle {
+        flex-shrink: 0;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1;
+        padding: 2px 2px;
+        margin-top: 1px;
+        cursor: grab;
+        /* Without this, a touch-drag starting on the handle also triggers the browser's own
+           page-scroll gesture on mobile -- pointer events alone don't suppress that. */
+        touch-action: none;
+        user-select: none;
+      }
+      .route-row.dragging .drag-handle {
+        cursor: grabbing;
       }
       .route-row .seq {
         flex-shrink: 0;
@@ -949,12 +999,22 @@
         </div>
 
         <div class="field">
-          <label>Search</label>
-          <input
-            type="text"
-            id="searchBox"
-            placeholder="Store name, code, subdistrict…"
-          />
+          <label for="searchBox">Search</label>
+          <div class="search-wrap">
+            <input
+              type="text"
+              id="searchBox"
+              placeholder="Store name, code, subdistrict…"
+            />
+            <button
+              id="searchClearBtn"
+              type="button"
+              aria-label="Clear search"
+              style="display: none"
+            >
+              ×
+            </button>
+          </div>
         </div>
 
         <div class="spacer"></div>
@@ -1019,7 +1079,12 @@
             </div>
             <div class="rp-actions">
               <button class="primary" id="optimizeBtn">Build route</button>
-              <button id="buildOneListBtn">One list (no days)</button>
+              <button
+                id="buildOneListBtn"
+                title="Build one flat list with everyone checked, instead of splitting into multiple days"
+              >
+                One list (no days)
+              </button>
               <button id="clearRouteBtn" class="danger">Clear</button>
             </div>
             <label
@@ -1034,6 +1099,7 @@
             >
               <input type="checkbox" id="useGpsBox" /> start day 1 from my
               current location
+              <span id="gpsStatus" style="font-style: italic"></span>
             </label>
             <div id="dayTabs" class="day-tabs"></div>
             <div id="dayNav" class="day-nav" style="display: none">
@@ -3438,6 +3504,91 @@
         renderRoutePanel();
       }
 
+      // ---------- drag-to-reorder ----------
+      // Pointer Events (not HTML5 drag-and-drop, which has no touch support at all -- this is a
+      // field app used mostly on phones) drive a live DOM reorder for immediate visual feedback,
+      // cheap at this scale (a route day tops out around MAX_STOPS). state is only touched once,
+      // on drop -- committing on every pointermove would be wasted renders and risks the
+      // dragged element getting torn out from under the gesture mid-drag.
+      let dragState = null;
+      function attachRowDragHandlers(handle, row) {
+        handle.addEventListener("pointerdown", (e) => {
+          if (isDayConfirmed()) return; // this row type only renders unconfirmed anyway; cheap guard
+          e.preventDefault();
+          dragState = { pointerId: e.pointerId, row, startY: e.clientY };
+          row.classList.add("dragging");
+          // Capture just makes the drag robust against the pointer moving faster than the
+          // element's bounds (move/up keep firing on `handle` regardless of where the pointer
+          // physically is). It can throw on some browser/OS combinations -- the move/up
+          // listeners below are already live either way, so a failure here isn't fatal.
+          try {
+            handle.setPointerCapture(e.pointerId);
+          } catch (err) {
+            console.warn("pointer capture failed (drag still works)", err);
+          }
+        });
+
+        handle.addEventListener("pointermove", (e) => {
+          if (!dragState || dragState.pointerId !== e.pointerId) return;
+          const dy = e.clientY - dragState.startY;
+          dragState.row.style.transform = `translateY(${dy}px)`;
+
+          // Which sibling has the dragged row's current center crossed? Swap DOM position
+          // with it so the list visually reflows while dragging, without touching state yet.
+          const draggedRect = dragState.row.getBoundingClientRect();
+          const draggedMid = draggedRect.top + draggedRect.height / 2;
+          for (const sib of routeListEl.children) {
+            if (sib === dragState.row) continue;
+            const r = sib.getBoundingClientRect();
+            const sibMid = r.top + r.height / 2;
+            if (
+              dy < 0 &&
+              draggedMid < sibMid &&
+              sib.offsetTop < dragState.row.offsetTop
+            ) {
+              routeListEl.insertBefore(dragState.row, sib);
+              dragState.startY = e.clientY;
+              dragState.row.style.transform = "translateY(0px)";
+              break;
+            }
+            if (
+              dy > 0 &&
+              draggedMid > sibMid &&
+              sib.offsetTop > dragState.row.offsetTop
+            ) {
+              routeListEl.insertBefore(dragState.row, sib.nextSibling);
+              dragState.startY = e.clientY;
+              dragState.row.style.transform = "translateY(0px)";
+              break;
+            }
+          }
+        });
+
+        function endDrag(e) {
+          if (!dragState || dragState.pointerId !== e.pointerId) return;
+          dragState.row.classList.remove("dragging");
+          dragState.row.style.transform = "";
+          const newOrderIds = Array.from(routeListEl.children).map(
+            (r) => r.dataset.id,
+          );
+          dragState = null;
+          // Same array-selection convention as moveInOrder -- mutate dayChunks[activeDay] in
+          // place when day-split is active, state.order otherwise. state.order isn't kept in
+          // sync with per-day order when dayChunks exists (moveInOrder doesn't either); nothing
+          // reads it for display in that case, only state.checked's membership matters there.
+          const arr = state.dayChunks
+            ? state.dayChunks[state.activeDay]
+            : state.order;
+          arr.length = 0;
+          arr.push(...newOrderIds);
+          saveRouteState();
+          renderList();
+          renderRoutePanel();
+        }
+        handle.addEventListener("pointerup", endDrag);
+        handle.addEventListener("pointercancel", endDrag);
+      }
+
       function clearRoute() {
         if (
           state.checked.size &&
@@ -3602,7 +3753,9 @@
             if (!store) return;
             const row = document.createElement("div");
             row.className = "route-row";
+            row.dataset.id = id;
             row.innerHTML = `
+        <button class="drag-handle" aria-label="Drag to reorder ${escapeHtml(store.name)}">⠿</button>
         <div class="seq">${idx + 1}</div>
         <div class="info">
           <div class="name">${escapeHtml(store.name)}</div>
@@ -3622,6 +3775,7 @@
             row
               .querySelector("[data-remove]")
               .addEventListener("click", () => removeFromRoute(id));
+            attachRowDragHandlers(row.querySelector(".drag-handle"), row);
             frag.appendChild(row);
           });
           routeListEl.appendChild(frag);
@@ -4580,8 +4734,21 @@
           renderList();
         });
 
-      document.getElementById("searchBox").addEventListener("input", (e) => {
+      const searchBoxEl = document.getElementById("searchBox");
+      const searchClearBtn = document.getElementById("searchClearBtn");
+      function updateSearchClearBtn() {
+        searchClearBtn.style.display = state.search ? "block" : "none";
+      }
+      searchBoxEl.addEventListener("input", (e) => {
         state.search = e.target.value;
+        updateSearchClearBtn();
+        renderList();
+      });
+      searchClearBtn.addEventListener("click", () => {
+        state.search = "";
+        searchBoxEl.value = "";
+        updateSearchClearBtn();
+        searchBoxEl.focus();
         renderList();
       });
 
@@ -4598,9 +4765,21 @@
           renderDistrictAreas();
         });
 
+      // Past this many NEW stores in one go, "select all shown" gets a confirm -- with no
+      // narrowing filter active (e.g. the "All" person tab, no search/district), "shown" can
+      // mean hundreds of stores checked into the plan from a single accidental tap.
+      const SELECT_ALL_CONFIRM_THRESHOLD = 20;
       document.getElementById("checkAllBox").addEventListener("change", (e) => {
         const list = filteredStores();
         if (e.target.checked) {
+          const newCount = list.filter((s) => !state.checked.has(s.id)).length;
+          if (
+            newCount > SELECT_ALL_CONFIRM_THRESHOLD &&
+            !confirm(`Add all ${newCount} shown stores to the route plan?`)
+          ) {
+            e.target.checked = false;
+            return;
+          }
           list.forEach((s) => {
             if (!state.checked.has(s.id)) {
               state.checked.add(s.id);
@@ -4666,6 +4845,16 @@
       // turns sync off. Repoint it from the browser console instead, if ever
       // needed: setSyncUrl("https://script.google.com/.../exec")
       document.getElementById("editRouteBtn").addEventListener("click", () => {
+        // Un-confirming reopens a day for editing/reordering/removal -- worth a confirm since
+        // it's a single tap with no undo, and a day that's been confirmed may already have real
+        // visit ticks synced to the Sheet if the rep has started their route.
+        const visitedCount = activeIdsList().filter(
+          (id) => state.visited[id],
+        ).length;
+        const msg = visitedCount
+          ? `Edit this day? ${visitedCount} stop(s) are already marked visited -- reordering or removing stops won't undo those visits, but the day will no longer be locked.`
+          : "Edit this day? It will no longer be locked for editing.";
+        if (!confirm(msg)) return;
         state.confirmedDays[state.activeDay] = false;
         saveRouteState();
         renderList();
@@ -4685,23 +4874,30 @@
 
       document.getElementById("useGpsBox").addEventListener("change", (e) => {
         state.useGps = e.target.checked;
+        const gpsStatusEl = document.getElementById("gpsStatus");
         if (state.useGps && !state.gpsPos && navigator.geolocation) {
+          // getCurrentPosition can take a few seconds (longer indoors) with zero visible
+          // feedback otherwise -- the checkbox just sat checked with nothing happening.
+          gpsStatusEl.textContent = "· getting location…";
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               state.gpsPos = {
                 lat: pos.coords.latitude,
                 lng: pos.coords.longitude,
               };
+              gpsStatusEl.textContent = "";
               updateRouteLine();
               renderRoutePanel();
             },
             (err) => {
+              gpsStatusEl.textContent = "";
               alert("Could not get your location: " + err.message);
               e.target.checked = false;
               state.useGps = false;
             },
           );
         } else {
+          gpsStatusEl.textContent = "";
           updateRouteLine();
           renderRoutePanel();
         }
