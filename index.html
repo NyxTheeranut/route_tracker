@@ -483,26 +483,10 @@
         color: var(--muted);
         margin-bottom: 8px;
       }
-      #routePanel .rp-days-config input[type="number"] {
+      #routePanel .rp-days-config input {
         width: 52px;
         text-align: center;
         padding: 5px 4px;
-      }
-      #routePanel .no-split-row {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        cursor: pointer;
-        white-space: nowrap;
-      }
-      #routePanel #perDayRow {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      #routePanel #perDayRow.disabled {
-        opacity: 0.4;
-        pointer-events: none;
       }
       .manual-hint {
         font-size: 10.5px;
@@ -1015,21 +999,15 @@
           <div class="rp-head">
             <h2>Route plan — <span id="routeCount">0</span> stops</h2>
             <div class="rp-days-config">
-              <label class="no-split-row">
-                <input type="checkbox" id="noSplitToggle" />
-                No day split — one list
-              </label>
-              <span id="perDayRow">
-                Up to
-                <input
-                  type="number"
-                  id="perDayInput"
-                  min="1"
-                  max="60"
-                  value="8"
-                />
-                stores per day
-              </span>
+              Up to
+              <input
+                type="number"
+                id="perDayInput"
+                min="1"
+                max="60"
+                value="8"
+              />
+              stores per day
             </div>
             <div
               class="chip-toggle"
@@ -1041,6 +1019,7 @@
             </div>
             <div class="rp-actions">
               <button class="primary" id="optimizeBtn">Build route</button>
+              <button id="buildOneListBtn">One list (no days)</button>
               <button id="clearRouteBtn" class="danger">Clear</button>
             </div>
             <label
@@ -2585,7 +2564,6 @@
         checked: new Set(), // store ids ticked for the plan
         order: [], // flat ordered list of checked ids (used when no day-split yet)
         perDay: 8, // auto-split target: max stores per day (day count is derived from this)
-        noSplit: false, // auto mode, "no day split" checked -- Build route makes one flat list
         dayMode: "auto", // 'auto' = algorithm decides day groupings, 'manual' = user assigns
         dayChunks: null, // array of arrays of store ids, one per day, after "Build route"
         activeDay: 0, // which day tab is focused
@@ -2676,22 +2654,10 @@
       }
 
       // ---------- persistence ----------
-      // Keeps the checkbox and the (now-irrelevant-while-checked) per-day field in sync with
-      // state.noSplit -- called from every place that restores state from storage rather than
-      // from a live checkbox click (load, cloud pull), so those don't leave the UI showing the
-      // previous session's checkbox state.
-      function syncNoSplitUi() {
-        const toggle = document.getElementById("noSplitToggle");
-        const perDayRow = document.getElementById("perDayRow");
-        if (toggle) toggle.checked = state.noSplit;
-        if (perDayRow) perDayRow.classList.toggle("disabled", state.noSplit);
-      }
-
       function loadRouteState() {
         state.checked = new Set();
         state.order = [];
         state.perDay = 8;
-        state.noSplit = false;
         state.dayMode = "auto";
         state.dayChunks = null;
         state.activeDay = 0;
@@ -2705,7 +2671,6 @@
             state.order = (saved.order || []).filter((id) => storeById(id));
             state.checked = new Set(state.order);
             state.perDay = saved.perDay || 8;
-            state.noSplit = !!saved.noSplit;
             state.dayMode = saved.dayMode === "manual" ? "manual" : "auto";
             if (Array.isArray(saved.dayChunks)) {
               const chunks = saved.dayChunks.map((chunk) =>
@@ -2732,7 +2697,6 @@
         }
         const perDayInput = document.getElementById("perDayInput");
         if (perDayInput) perDayInput.value = state.perDay;
-        syncNoSplitUi();
         document.querySelectorAll("#dayModeToggle .chip").forEach((c) => {
           c.classList.toggle("active", c.dataset.mode === state.dayMode);
         });
@@ -2741,7 +2705,6 @@
         return {
           order: state.order,
           perDay: state.perDay,
-          noSplit: state.noSplit,
           dayMode: state.dayMode,
           dayChunks: state.dayChunks,
           activeDay: state.activeDay,
@@ -4252,7 +4215,6 @@
         state.order = (plan.order || []).filter((id) => storeById(id));
         state.checked = new Set(state.order);
         state.perDay = plan.perDay || 8;
-        state.noSplit = !!plan.noSplit;
         state.dayMode = plan.dayMode === "manual" ? "manual" : "auto";
         const chunks = Array.isArray(plan.dayChunks)
           ? plan.dayChunks.map((c) => c.filter((id) => storeById(id)))
@@ -4273,7 +4235,6 @@
         cloudSync.dirty = false;
         const perDayInput = document.getElementById("perDayInput");
         if (perDayInput) perDayInput.value = state.perDay;
-        syncNoSplitUi();
         document.querySelectorAll("#dayModeToggle .chip").forEach((c) => {
           c.classList.toggle("active", c.dataset.mode === state.dayMode);
         });
@@ -4350,7 +4311,13 @@
         }
       }
 
-      async function buildRoute() {
+      // forceOneList: a one-shot override for this build only (the "One list (no days)" button)
+      // -- not persisted state, so it can't linger and silently change what a later, ordinary
+      // "Build route" click does. Whoever calls this with an argument must pass it explicitly
+      // (true/false), never rely on a default -- see the buildBtn wiring below for why: a bare
+      // `addEventListener("click", buildRoute)` would hand the click Event itself in here as
+      // this argument, and an Event object is truthy.
+      async function buildRoute(forceOneList) {
         const startPoint = state.useGps && state.gpsPos ? state.gpsPos : null;
         const originalLabel = buildBtn.textContent;
         buildBtn.disabled = true;
@@ -4400,11 +4367,12 @@
             perDayInput.value = perDay;
             state.perDay = perDay;
 
-            // "No day split" -- clusterIntoDays computes k = ceil(count/perDay), so passing
-            // pts.length as the effective cap forces k=1 (one cluster, everyone in it) without
-            // needing a separate code path. The real perDay setting is left untouched in
-            // state/the input box, so unchecking this later goes right back to it.
-            const clusterCap = state.noSplit ? Math.max(1, pts.length) : perDay;
+            // "One list (no days)" button: clusterIntoDays computes k = ceil(count/perDay), so
+            // passing pts.length as the effective cap forces k=1 (one cluster, everyone in it)
+            // without needing a separate clustering path. The real perDay setting in state/the
+            // input box is untouched either way, so an ordinary "Build route" click right after
+            // still splits normally.
+            const clusterCap = forceOneList ? Math.max(1, pts.length) : perDay;
 
             // Cluster into days on straight-line distance (plenty accurate for
             // deciding which day a store belongs to), then order the days so
@@ -4678,16 +4646,6 @@
       });
 
       document
-        .getElementById("noSplitToggle")
-        .addEventListener("change", (e) => {
-          state.noSplit = e.target.checked;
-          syncNoSplitUi();
-          saveRouteState();
-          // Takes effect on the next Build route, same as changing the per-day number does --
-          // doesn't retroactively re-split/merge a plan that's already built.
-        });
-
-      document
         .getElementById("prevDayBtn")
         .addEventListener("click", () => goToDay(-1));
       document
@@ -4714,7 +4672,12 @@
         renderRoutePanel();
       });
 
-      buildBtn.addEventListener("click", buildRoute);
+      // Wrapped, not passed directly -- addEventListener hands the click Event itself as the
+      // first argument, and buildRoute's forceOneList param would treat that Event as truthy.
+      buildBtn.addEventListener("click", () => buildRoute());
+      document
+        .getElementById("buildOneListBtn")
+        .addEventListener("click", () => buildRoute(true));
       document
         .getElementById("clearRouteBtn")
         .addEventListener("click", clearRoute);
