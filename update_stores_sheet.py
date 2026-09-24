@@ -26,17 +26,32 @@ import openpyxl
 SYNC_URL = "https://script.google.com/macros/s/AKfycbxJQOlyXKHuqOXLFMFxRUuJ3z-I50OL8kkPiMz0uOKY4DqjK0WdVOmJBd1aUTuWaWMilA/exec"
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent
-SEVEN_ELEVEN_XLSX = DASHBOARD_DIR / "Google_MyMap_7-Eleven Database NTB.xlsx"
-RTR_XLSX = DASHBOARD_DIR / "Google_MyMap_RTR Database.xlsx"
+
+
+def _find(name):
+    """Locate a file that lives outside this repo, in the Dashboard folder.
+    The source spreadsheets and the secret were moved into "Store Database/" and
+    "Config/"; the bare Dashboard root is kept as a fallback so an older layout
+    (or a copy left at the top level) still works. Returns the Store Database/
+    path when nothing is found, so the error message names a sensible location."""
+    for folder in (DASHBOARD_DIR / "Store Database", DASHBOARD_DIR / "Config", DASHBOARD_DIR):
+        candidate = folder / name
+        if candidate.exists():
+            return candidate
+    return DASHBOARD_DIR / "Store Database" / name
+
+
+SEVEN_ELEVEN_XLSX = _find("Google_MyMap_7-Eleven Database NTB.xlsx")
+RTR_XLSX = _find("Google_MyMap_RTR Database.xlsx")
 
 # Must match the SYNC_SECRET Script Property set in the Apps Script project.
 # Without this, syncStores had no auth at all -- anyone who found the
 # (public, embedded-in-index.html) deployment URL could overwrite the entire
-# store list with one request. Lives in a plain file next to the xlsx
-# sources, one level above this repo -- same as those, it's deliberately
-# never committed: this script and its repo are public on GitHub Pages, and a
-# secret checked into a public repo isn't a secret.
-SYNC_SECRET_FILE = DASHBOARD_DIR / "sync_secret.txt"
+# store list with one request. Lives in a plain file in the Dashboard folder's
+# Config/ directory, one level above this repo -- same as the xlsx sources, it's
+# deliberately never committed: this script and its repo are public on GitHub
+# Pages, and a secret checked into a public repo isn't a secret.
+SYNC_SECRET_FILE = _find("sync_secret.txt")
 
 
 def to_float(v):
@@ -115,6 +130,16 @@ def extract_rtr(path):
     return stores
 
 
+PROGRESS_TOTAL_STEPS = 3
+
+
+def progress(step, label, width=28):
+    filled = int(width * step / PROGRESS_TOTAL_STEPS)
+    bar = "█" * filled + "░" * (width - filled)
+    pct = int(100 * step / PROGRESS_TOTAL_STEPS)
+    print(f"\n[{bar}] {pct:3d}%  Step {step}/{PROGRESS_TOTAL_STEPS}: {label}")
+
+
 def main():
     if not SEVEN_ELEVEN_XLSX.exists():
         raise SystemExit(f"Not found: {SEVEN_ELEVEN_XLSX}")
@@ -128,7 +153,10 @@ def main():
         )
     sync_secret = SYNC_SECRET_FILE.read_text(encoding="utf-8").strip()
 
-    stores = extract_seven_eleven(SEVEN_ELEVEN_XLSX) + extract_rtr(RTR_XLSX)
+    progress(1, "Reading 7-Eleven store file")
+    seven_eleven_stores = extract_seven_eleven(SEVEN_ELEVEN_XLSX)
+    progress(2, "Reading RTR store file")
+    stores = seven_eleven_stores + extract_rtr(RTR_XLSX)
     print(f"Parsed {len(stores)} stores "
           f"({sum(1 for s in stores if s['type']=='7-11')} 7-Eleven, "
           f"{sum(1 for s in stores if s['type']=='RTR')} RTR)")
@@ -142,6 +170,7 @@ def main():
         method="POST",
         headers={"Content-Type": "text/plain;charset=utf-8"},
     )
+    progress(3, "Uploading to Google Sheet")
     print("Uploading to Google Sheet...")
     try:
         with urllib.request.urlopen(req, timeout=60) as res:
