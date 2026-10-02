@@ -21,9 +21,23 @@ Apps Script Web App  ──executes as the Sheet owner──▶  Google Sheet
 this page renders the map/routes/checklist for just those stores
 ```
 
-`update_stores_sheet.py` is a separate, local-only tool — it re-reads the
+`sync/update_stores_sheet.py` is a separate, local-only tool — it re-reads the
 source xlsx files on your machine and pushes the full store list into the
 Sheet. It's never called from the hosted page.
+
+## Repo layout
+
+```
+index.html        the whole site -- GitHub Pages serves this from repo root
+manifest.json      Android/iOS "Add to Home Screen" metadata
+icons/             app icons (source + generated apple-touch/192/512 sizes)
+backend/           Sheets Sync - Apps Script Code.gs (paste into Apps Script)
+sync/              update_stores_sheet.py -- the local store-list sync tool
+```
+
+`sync/update_stores_sheet.py` reaches outside this repo to the Dashboard
+folder's `Store Database/` (source xlsx files) and `Config/` (the sync
+secret) -- see the next section.
 
 ## One-time setup
 
@@ -49,13 +63,13 @@ Sheet. It's never called from the hosted page.
 
 1. Create a new Google Sheet.
 2. **Extensions → Apps Script**, delete the starter code, paste in the full
-   contents of `Sheets Sync - Apps Script Code.gs` from this repo.
+   contents of `backend/Sheets Sync - Apps Script Code.gs` from this repo.
 3. **Project Settings** (gear icon, left sidebar) → **Script Properties** →
    add two:
    - `OAUTH_CLIENT_ID` = the Client ID from step 1.
    - `SYNC_SECRET` = any random string, e.g. from `openssl rand -hex 24` in a
      terminal. Gates the `syncStores` action (used only by
-     `update_stores_sheet.py`, see step 5) — without it, anyone who finds the
+     `sync/update_stores_sheet.py`, see step 5) — without it, anyone who finds the
      deployment URL could overwrite the entire store list with one request,
      since that action can't go through the sign-in check the way everything
      else does.
@@ -85,12 +99,13 @@ Sheet. It's never called from the hosted page.
 
 ### 5. Push the store list
 
-Create a file named `sync_secret.txt` next to (one level above) this repo —
-i.e. in the `Dashboard` folder — containing exactly the `SYNC_SECRET` value
+Create a file named `sync_secret.txt` outside this repo, in the `Dashboard`
+folder's `Config/` directory — containing exactly the `SYNC_SECRET` value
 from step 2, no extra whitespace. **Never commit this file**; it lives
 outside the repo specifically so it can't be. Then run
-`update_stores_sheet.py` (or double-click `Update Store List.command` in the
-Dashboard folder) to populate the "7-Eleven Stores" / "RTR Stores" tabs.
+`sync/update_stores_sheet.py` (or double-click `Update Route Planner.command` in the
+Dashboard folder's `Launchers/`) to populate the "7-Eleven Stores" /
+"RTR Stores" tabs.
 Re-run it any time the source xlsx files change.
 
 ### 6. Deploy to GitHub Pages
@@ -114,7 +129,7 @@ branch → `main` / `(root)`**. The page will be live at
   `ae` can't read or write another salesperson's visit records by passing a
   different name in the request.
 - `syncStores` can't go through that check at all — it's not a person
-  signing in, it's `update_stores_sheet.py` running on your own machine — so
+  signing in, it's `sync/update_stores_sheet.py` running on your own machine — so
   it's gated by `SYNC_SECRET` instead (see step 2 and step 5 above). This
   deployment's URL is not actually secret; it's embedded directly in the
   public `index.html`, so without this, "Anyone" access would mean anyone on

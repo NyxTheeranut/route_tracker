@@ -25,7 +25,7 @@ import openpyxl
 # change the other.
 SYNC_URL = "https://script.google.com/macros/s/AKfycbxJQOlyXKHuqOXLFMFxRUuJ3z-I50OL8kkPiMz0uOKY4DqjK0WdVOmJBd1aUTuWaWMilA/exec"
 
-DASHBOARD_DIR = Path(__file__).resolve().parent.parent
+DASHBOARD_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def _find(name):

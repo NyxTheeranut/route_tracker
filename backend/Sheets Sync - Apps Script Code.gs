@@ -127,6 +127,16 @@ function doPost(e) {
       return jsonResponse_({ ok: true, count: count });
     }
 
+    // TEMPORARY diagnostic for the "CM signs in, sees zero stores" investigation --
+    // read-only (writes nothing), gated the same way as syncStores since this isn't a
+    // person signing in either. Safe to leave in, but delete this block (and
+    // debugCmMatch_ below) once the mismatch is found -- it's not meant to be permanent
+    // API surface.
+    if (body.action === "debugCmMatch") {
+      requireSyncSecret_(body.secret);
+      return jsonResponse_(debugCmMatch_(body.email));
+    }
+
     return jsonResponse_({ ok: false, error: "unknown action" });
   } catch (err) {
     return jsonResponse_({ ok: false, error: String(err) });
@@ -558,6 +568,78 @@ function writeStoreSheet_(sheetName, stores) {
   range.setValues(rows);
   sheet.setFrozenRows(1);
   sheet.autoResizeColumns(1, STORE_HEADER.length);
+}
+
+// ---------- TEMPORARY: CM/AE zero-stores diagnostic (see doPost's debugCmMatch) ----------
+// Char codes turn an invisible difference (trailing space, a look-alike Thai codepoint,
+// a zero-width character) into something visibly comparable -- two strings that render
+// identically on screen can still fail === if even one code point differs.
+function charCodes_(s) {
+  return String(s || "")
+    .split("")
+    .map(function (ch) { return ch.charCodeAt(0); });
+}
+
+function debugCmMatch_(targetEmail) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1. The Users tab row for this email, raw AND trimmed, both with char codes.
+  var usersSheet = ss.getSheetByName("Users");
+  var userRow = null;
+  if (usersSheet) {
+    var data = usersSheet.getDataRange().getValues();
+    var header = data[0];
+    var idx = {};
+    header.forEach(function (h, i) { idx[String(h).trim()] = i; });
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][idx.email]).trim().toLowerCase() === String(targetEmail).trim().toLowerCase()) {
+        var rawCm = data[i][idx.cm_name];
+        var rawPerson = data[i][idx.person_name];
+        userRow = {
+          role: data[i][idx.role],
+          person_name_raw: rawPerson,
+          person_name_trimmed: String(rawPerson || "").trim(),
+          person_name_charCodes: charCodes_(String(rawPerson || "").trim()),
+          cm_name_raw: rawCm,
+          cm_name_trimmed: String(rawCm || "").trim(),
+          cm_name_charCodes: charCodes_(String(rawCm || "").trim()),
+        };
+        break;
+      }
+    }
+  }
+
+  // 2. Every DISTINCT cm value actually present in the store data, post-trim (i.e. exactly
+  // what the live myStores_ comparison sees today), each with char codes -- so
+  // userRow.cm_name_trimmed can be checked for an exact match against this list, or the
+  // closest-looking entry can be diffed by eye via its char codes.
+  var distinctCm = {};
+  ss.getSheets().forEach(function (sheet) {
+    if (!/stores$/i.test(sheet.getName().trim())) return;
+    var d = sheet.getDataRange().getValues();
+    if (d.length < 2) return;
+    var sIdx = {};
+    d[0].forEach(function (h, i) { sIdx[String(h).trim()] = i; });
+    if (sIdx.cm == null) return;
+    for (var r = 1; r < d.length; r++) {
+      var cmVal = String(d[r][sIdx.cm] || "").trim();
+      if (cmVal) distinctCm[cmVal] = (distinctCm[cmVal] || 0) + 1;
+    }
+  });
+  var distinctCmList = Object.keys(distinctCm).map(function (cm) {
+    return { value: cm, storeCount: distinctCm[cm], charCodes: charCodes_(cm) };
+  });
+
+  var exactMatchExists = userRow
+    ? distinctCmList.some(function (c) { return c.value === userRow.cm_name_trimmed; })
+    : null;
+
+  return {
+    ok: true,
+    userRow: userRow,
+    exactMatchExistsInStoreData: exactMatchExists,
+    distinctCmValuesInStoreData: distinctCmList,
+  };
 }
 
 function jsonResponse_(obj) {
