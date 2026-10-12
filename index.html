@@ -965,8 +965,325 @@
         }
       }
     </style>
+      <meta name="description" content="Plan and run a field-visit route: pick stores, build an optimised day-by-day route, tick visits off." />
+    <meta name="theme-color" content="#2452c7" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style id="redesign">
+/* Route Planner redesign layer.
+   Sources: redesign-existing-projects audit (font with character, one accent,
+   tinted neutrals, no generic shadows, hover/active/focus states, empty states,
+   dvh) + ui-ux-pro-max Logistics/Delivery (Swiss + flat, 8px unit, 4.5:1
+   contrast, 44px touch targets, visible focus, reduced motion).
+   Delete this whole <style> block to get the original look back. */
+:root {
+  /* one cool-slate neutral family, one accent */
+  --bg: #eef2f7;
+  --panel: #ffffff;
+  --border: #dbe2ec;
+  --line-soft: #edf1f6;
+  --text: #0f1b2d;
+  --muted: #55657d;
+  --accent: #2452c7;
+  --accent-ink: #1b3f9e;
+  --accent-soft: #e8eefc;
+  --orange: #bf4f14; /* data colour only: 7-Eleven pins and badges */
+  --green: #1c7f55;
+  --red: #c0392f;
+  --radius: 6px;
+  --shadow: none;
+  --ease: 160ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  --font: "IBM Plex Sans Thai", "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+html, body { font-family: var(--font); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+body { font-size: 14px; line-height: 1.45; }
+* { box-shadow: none !important; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+::selection { background: var(--accent-soft); }
+
+.skip-link {
+  position: absolute; left: 8px; top: -48px; z-index: 2000; background: var(--text); color: #fff;
+  padding: 10px 14px; border-radius: var(--radius); font-weight: 600; text-decoration: none; transition: top var(--ease);
+}
+.skip-link:focus { top: 8px; }
+
+/* ---------- login ---------- */
+.login-gate {
+  z-index: 1500;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle, #c9d3e1 1px, transparent 1.2px);
+  background-size: 22px 22px;
+}
+.login-card { border-radius: 10px; text-align: left; padding: 32px; max-width: 360px; border-color: var(--border); }
+.login-card h1 { font-size: 24px; letter-spacing: -0.02em; font-weight: 600; margin-bottom: 8px; }
+.login-card p { font-size: 14px; margin-bottom: 24px; text-wrap: pretty; }
+#gsiButton { justify-content: flex-start; }
+
+/* ---------- top bar ---------- */
+header {
+  gap: 8px 24px; padding: 0 16px; min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+header h1 {
+  display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+}
+header h1::before {
+  content: ""; width: 24px; height: 24px; border-radius: 6px; background: var(--accent) center / 16px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='6' cy='18' r='2.2'/%3E%3Ccircle cx='18' cy='6' r='2.2'/%3E%3Cpath d='M6 15.8V12a3 3 0 0 1 3-3h6'/%3E%3C/svg%3E");
+}
+header h1 span { color: var(--text); font-weight: 400; }
+header .field { flex-direction: row; align-items: center; gap: 8px; }
+.field label {
+  font-size: 12px; font-weight: 500; color: var(--muted); text-transform: none; letter-spacing: 0;
+}
+select, input[type="text"], input[type="number"] {
+  font-family: inherit; font-size: 14px; min-height: 36px; padding: 0 10px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: #fff; transition: border-color var(--ease);
+}
+select:hover, input[type="text"]:hover, input[type="number"]:hover { border-color: #aab7cb; }
+select:focus-visible, input[type="text"]:focus-visible, input[type="number"]:focus-visible { border-color: var(--accent); outline-offset: 0; }
+.search-wrap input { min-width: 240px; }
+.stat { font-size: 13px; color: var(--muted); }
+.stat b { font-weight: 600; font-size: 14px; }
+
+/* segmented controls instead of pill chips */
+.chip-toggle { width: fit-content; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #fff; }
+.chip {
+  font-size: 13px; font-weight: 500; padding: 0 12px; min-height: 34px; display: inline-flex; align-items: center;
+  border: 0; border-radius: 0; border-right: 1px solid var(--border); color: var(--muted);
+  transition: background var(--ease), color var(--ease);
+}
+.chip:last-child { border-right: 0; }
+.chip:hover { background: var(--line-soft); color: var(--text); }
+.chip.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+
+/* person tabs: underline, not pills */
+.person-tabs { gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.person-tab {
+  border: 0; border-radius: 0; background: transparent; padding: 12px 12px 10px; margin-bottom: -1px; font-size: 13px;
+  font-weight: 500; border-bottom: 2px solid transparent; transition: color var(--ease), border-color var(--ease);
+}
+.person-tab:hover { background: transparent; color: var(--text); border-color: var(--border); }
+.person-tab.active { background: transparent; color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.person-tab .tab-count { font-weight: 500; opacity: 1; color: var(--muted); }
+
+/* ---------- panels: full-bleed, hairline-divided ---------- */
+#sidebar, #routePanel { background: var(--panel); }
+#sidebar { width: 336px; max-width: 336px; }
+#routePanel { width: 360px; max-width: 360px; }
+.sidebar-section-title, .field label.sec {
+  font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); padding: 14px 16px 6px;
+}
+.sidebar-section-title button { border-radius: 4px; font-size: 12px; padding: 2px 8px; }
+.district-panel { border-bottom: 1px solid var(--border); }
+.area-toggle { padding: 0 16px 12px; font-size: 12px; }
+.amphur-row { padding: 4px 16px 10px; }
+.amphur-pill { border-radius: 6px; font-size: 12px; border-width: 1px; padding: 5px 10px; transition: background var(--ease), color var(--ease); }
+.amphur-pill:hover { transform: none; background: color-mix(in srgb, var(--pill-color) 10%, white); }
+.amphur-pill.active:hover { background: var(--pill-color); }
+.district-group-header { padding: 8px 16px 4px; font-size: 12px; }
+.district-grid { padding: 0 16px 8px; gap: 6px; }
+.district-card { border-radius: 6px; border-left-width: 3px; transition: background var(--ease); }
+.district-card:hover { transform: none; background: var(--line-soft); }
+.district-card .dname { font-size: 12px; }
+.district-card .dcount { font-size: 15px; font-weight: 600; }
+#sidebar .sidebar-head { padding: 8px 16px; }
+#sidebar .sidebar-head label { font-size: 13px !important; display: flex; align-items: center; gap: 8px; }
+input[type="checkbox"] { accent-color: var(--accent); }
+
+/* store rows: hairlines, a left bar for selection */
+.store-row {
+  gap: 12px; padding: 12px 16px 12px 13px; border-bottom: 1px solid var(--line-soft); border-left: 3px solid transparent;
+  transition: background var(--ease);
+}
+.store-row:hover { background: #f7f9fc; }
+.store-row.checked { background: var(--accent-soft); border-left-color: var(--accent); }
+.store-row input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; }
+.store-row .name { font-size: 14px; font-weight: 500; line-height: 1.35; }
+.store-row .meta { font-size: 12px; margin-top: 3px; gap: 8px; }
+.badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; letter-spacing: 0; }
+.badge.t711 { background: var(--orange); }
+.badge.trtr { background: var(--accent); }
+.badge.status-inactive { background: #8a97ab; }
+.day-badge { border-radius: 4px; font-size: 11px; font-weight: 600; padding: 1px 6px; }
+
+/* ---------- route panel ---------- */
+#routePanel .rp-head { padding: 16px; }
+#routePanel .rp-head h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 12px; }
+#routePanel .rp-days-config { font-size: 13px; margin-bottom: 12px; gap: 8px; }
+#routePanel .rp-days-config input { width: 56px; min-height: 32px; }
+#routePanel .rp-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+#routePanel .rp-actions > * { margin: 0; min-width: 0; white-space: nowrap; }
+#routePanel .rp-actions > #optimizeBtn { grid-column: 1 / -1; }
+
+button {
+  font-family: inherit; font-size: 13px; font-weight: 600; min-height: 38px; padding: 0 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: #fff; color: var(--text);
+  transition: background var(--ease), border-color var(--ease), color var(--ease), transform 90ms ease-out;
+}
+button:hover { background: var(--line-soft); border-color: #aab7cb; color: var(--text); }
+button:active:not(:disabled) { transform: scale(0.98); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: var(--accent-ink); border-color: var(--accent-ink); opacity: 1; color: #fff; }
+button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, white); background: #fff; }
+button.danger:hover { background: color-mix(in srgb, var(--red) 8%, white); border-color: var(--red); color: var(--red); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+.sidebar-section-title button, .checklist-bar button { min-height: 28px; font-size: 12px; padding: 0 10px; }
+.manual-hint { font-size: 12px; }
+.assign-banner, .checklist-bar { border-radius: var(--radius); background: var(--bg); font-size: 13px; padding: 8px 10px; }
+
+.day-tabs { gap: 0; margin-top: 12px; border-bottom: 1px solid var(--border); flex-wrap: nowrap; overflow-x: auto; }
+.day-tab {
+  border: 0; border-radius: 0; background: transparent; padding: 8px 12px; margin-bottom: -1px; font-size: 13px; font-weight: 500;
+  border-bottom: 2px solid transparent; transition: color var(--ease), border-color var(--ease);
+}
+.day-tab:hover { color: var(--text); }
+.day-tab.active { background: transparent; color: var(--accent-ink); border-bottom-color: var(--accent); font-weight: 600; }
+.day-tab .day-tab-count { background: var(--line-soft); border-radius: 4px; font-size: 11px; }
+.day-tab.active .day-tab-count { background: var(--accent-soft); }
+
+/* the route reads as one line: a spine joins the numbered stops */
+.route-row {
+  position: relative; overflow: hidden; gap: 12px; padding: 10px 16px 10px 8px; border-bottom: 0; align-items: flex-start;
+  transition: background var(--ease);
+}
+.route-row:hover { background: #f7f9fc; }
+.route-row.dragging { background: var(--accent-soft); border-radius: var(--radius); }
+.route-row .seq {
+  position: relative; width: 26px; height: 26px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-top: 0; z-index: 1;
+}
+.route-row .seq::before, .route-row .seq::after {
+  content: ""; position: absolute; left: 50%; width: 2px; margin-left: -1px; height: 200px; background: #c3cee0; z-index: -1;
+}
+.route-row .seq::before { bottom: 100%; }
+.route-row .seq::after { top: 100%; }
+.route-row:first-child .seq::before, .route-row:last-child .seq::after { display: none; }
+.checklist-row.visited .seq { background: var(--green); }
+.checklist-row.visited .seq::before, .checklist-row.visited .seq::after { background: color-mix(in srgb, var(--green) 45%, white); }
+.checklist-row.visited .name { text-decoration: none; color: var(--muted); }
+.checklist-row.visited .meta::after { content: " · ✓ Visited"; color: var(--green); font-weight: 600; }
+.route-row .name { font-size: 14px; font-weight: 500; }
+.route-row .meta { font-size: 12px; margin-top: 2px; }
+.drag-handle { color: #8a97ab; font-size: 16px; min-height: 0; padding: 4px 0; border: 0; background: transparent; width: 16px; transition: color var(--ease); }
+.drag-handle:hover { background: transparent; color: var(--text); }
+.route-row .btns { flex-direction: row; gap: 2px; }
+.route-row .btns button { min-height: 28px; min-width: 28px; padding: 0; border-color: transparent; background: transparent; color: var(--muted); font-size: 13px; }
+.route-row .btns button:hover { background: var(--line-soft); color: var(--text); }
+.route-row .btns button[data-remove]:hover { background: color-mix(in srgb, var(--red) 10%, white); color: var(--red); }
+@media (hover: hover) {
+  .route-row .btns { opacity: 0; transition: opacity var(--ease); }
+  .route-row:hover .btns, .route-row:focus-within .btns { opacity: 1; }
+}
+
+.plan-notice { border-radius: var(--radius); font-size: 12px; }
+.rp-footer { padding: 12px 16px; background: var(--panel); }
+.rp-footer .distance { font-size: 13px; color: var(--text); }
+.rp-footer .distance:empty { display: none; }
+.rp-footer button { min-height: 42px; }
+
+.empty-hint {
+  margin: 16px; padding: 16px; border: 1px dashed #b7c3d6; border-radius: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; text-wrap: pretty;
+}
+.empty-hint::before { content: "No route yet"; display: block; color: var(--text); font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+
+/* ---------- map: tone the basemap down so pins carry the colour ---------- */
+.leaflet-tile-pane { filter: saturate(0.2) contrast(0.92) brightness(1.07); }
+.leaflet-bar { border: 1px solid var(--border) !important; border-radius: var(--radius) !important; overflow: hidden; }
+.leaflet-bar a { color: var(--text); border-bottom-color: var(--border); }
+.leaflet-popup-content-wrapper { border-radius: 8px; border: 1px solid var(--border); }
+.leaflet-popup-content { font-family: var(--font); }
+.pin { border-width: 2px; }
+.popup-box { font-size: 13px; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #c3cee0; border-radius: 6px; border: 2px solid #fff; }
+
+/* ---------- touch + phone ---------- */
+@media (pointer: coarse) {
+  button, .chip, .person-tab, .day-tab, select, input[type="text"], input[type="number"] { min-height: 44px; }
+  .route-row .btns { opacity: 1; }
+  .route-row .btns button { min-height: 40px; min-width: 40px; }
+  .drag-handle { width: 32px; min-height: 40px; }
+  .store-row input[type="checkbox"], .visit-check input { width: 22px; height: 22px; }
+}
+@media (max-width: 900px) {
+  body { font-size: 16px; }
+  header { padding: 8px 12px; min-height: 0; gap: 8px 12px; }
+  header .field label { display: none; }
+  .search-wrap input { min-width: 0; }
+  #sidebar, #routePanel { width: 100%; max-width: none; }
+  /* view switch becomes a bottom tab bar, the thumb-reach spot on a phone */
+  .view-switch {
+    order: 99; padding: 0 0 env(safe-area-inset-bottom); gap: 0; border-top: 1px solid var(--border); border-bottom: 0; background: var(--panel);
+  }
+  .view-switch button {
+    border: 0; border-radius: 0; min-height: 52px; font-size: 13px; font-weight: 500; color: var(--muted); background: transparent;
+    border-top: 3px solid transparent;
+  }
+  .view-switch button.active { background: transparent; color: var(--accent-ink); border-top-color: var(--accent); font-weight: 600; }
+  .store-row .name, .route-row .name { font-size: 15px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation-duration: 0.01ms !important; }
+  button:active { transform: none !important; }
+}
+.person-tabs, .day-tabs { scrollbar-width: none; }
+.person-tabs::-webkit-scrollbar, .day-tabs::-webkit-scrollbar { display: none; }
+
+/* ---------- polish pass: vector icons, tinted badges, search field, toolbars ---------- */
+.ico { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ico.dots { fill: currentColor; stroke: none; }
+button .ico { vertical-align: -3px; }
+button .ico:first-child { margin-right: 6px; }
+button .ico:last-child { margin-left: 6px; }
+.route-row .btns button, .sidebar-section-title button { display: inline-flex; align-items: center; justify-content: center; }
+.route-row .btns button .ico { margin: 0; }
+.route-row .btns button .ico { width: 15px; height: 15px; }
+.drag-handle .ico { width: 14px; height: 14px; }
+.drag-handle { display: inline-flex; align-items: center; justify-content: center; }
+
+.search-wrap input, header .search-wrap input[type="text"] {
+  padding-left: 34px;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2355657d' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") 11px center / 16px no-repeat;
+}
+
+/* tinted badges: calmer than white-on-colour, still above 4.5:1 */
+.badge.t711 { background: #fdeee3; color: #92390b; }
+.badge.trtr { background: #e8eefc; color: #1b3f9e; }
+.badge.status-inactive { background: #eef1f5; color: #55657d; }
+.store-row.checked .badge.trtr { background: #fff; }
+.store-row.checked .badge.t711 { background: #fff; }
+
+/* toolbars and panels read as distinct bands */
+.district-panel, #sidebar .sidebar-head, #routePanel .rp-head { background: #fafbfd; }
+#sidebar .sidebar-head { border-bottom: 1px solid var(--border); }
+.rp-footer { border-top: 1px solid var(--border); }
+.rp-footer .distance { font-weight: 500; }
+.stat { background: var(--bg); padding: 6px 12px; border-radius: 999px; }
+header .spacer + .stat { margin-left: auto; }
+.person-tab .tab-count { background: var(--line-soft); border-radius: 4px; padding: 0 6px; font-size: 12px; margin-left: 6px; }
+.person-tab.active .tab-count { background: var(--accent-soft); color: var(--accent-ink); }
+
+/* primary actions slightly larger, secondary quieter */
+#optimizeBtn, #confirmDayBtn, #gmapsBtn { min-height: 42px; font-size: 14px; }
+button.primary { letter-spacing: 0.005em; }
+#routePanel .rp-actions > button:not(.primary) { font-weight: 500; }
+
+/* selected stop rows get a clear lead-in, not just a tint */
+.store-row.checked .name { color: var(--accent-ink); font-weight: 600; }
+
+/* map chrome */
+.leaflet-control-attribution { font-size: 10px; background: rgba(255, 255, 255, 0.8) !important; }
+.leaflet-bar a { width: 34px; height: 34px; line-height: 34px; }
+
+.empty-state { padding: 24px 16px; color: var(--muted); font-size: 14px; }
+.empty-state p { margin: 0 0 8px; text-wrap: pretty; }
+.empty-state b { color: var(--text); font-weight: 600; }
+
+    </style>
   </head>
   <body>
+    <a class="skip-link" href="#storeList">Skip to store list</a>
     <div id="loginGate" class="login-gate">
       <div class="login-card">
         <h1>Route <span>Planner</span></h1>
@@ -1039,7 +1356,7 @@
             <div class="sidebar-section-title">
               <span>District (เขต) &amp; subdistrict</span>
               <button id="districtClearBtn" style="display: none">
-                ✕ clear
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg> Clear
               </button>
             </div>
             <div id="amphurRow" class="amphur-row"></div>
@@ -1107,12 +1424,12 @@
             </label>
             <div id="dayTabs" class="day-tabs"></div>
             <div id="dayNav" class="day-nav" style="display: none">
-              <button id="prevDayBtn">◀ Prev day</button>
-              <button id="nextDayBtn" class="primary">Next day ▶</button>
+              <button id="prevDayBtn"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 6-6 6 6 6"/></svg> Prev day</button>
+              <button id="nextDayBtn" class="primary">Next day <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 6 6 6-6 6"/></svg></button>
             </div>
             <div id="confirmRow" class="confirm-row" style="display: none">
               <button id="confirmDayBtn" class="primary">
-                ✓ Confirm Day <span id="confirmDayNum">1</span>'s route
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m5 12 5 5L20 7"/></svg> Confirm Day <span id="confirmDayNum">1</span>'s route
               </button>
             </div>
             <div id="checklistBar" class="checklist-bar" style="display: none">
@@ -1141,7 +1458,7 @@
           <div class="rp-footer">
             <div class="distance" id="distanceLine"></div>
             <button class="primary" id="gmapsBtn" disabled>
-              Open in Google Maps →
+              Open in Google Maps <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
             </button>
           </div>
         </div>
@@ -2587,14 +2904,14 @@
       }
 
       const DAY_COLORS = [
-        "#1c2230",
-        "#2f6fed",
-        "#e0453c",
-        "#1ea672",
-        "#a855f7",
-        "#f59e0b",
-        "#0891b2",
-        "#be185d",
+        "#0f766e",
+        "#a3262a",
+        "#4d7c0f",
+        "#6d3fc0",
+        "#b7791f",
+        "#0e6f8f",
+        "#9d174d",
+        "#475569",
       ];
 
       const DISTRICT_COLOR_MAP = {
@@ -2993,7 +3310,7 @@
       }
 
       function colorFor(type) {
-        return type === "7-11" ? "#ff7a00" : "#2f6fed";
+        return type === "7-11" ? "#bf4f14" : "#2452c7";
       }
 
       function makeIcon(store, seq, checked, dayIdx) {
@@ -3013,7 +3330,7 @@
           : checked
             ? dayIdx != null
               ? DAY_COLORS[dayIdx % DAY_COLORS.length]
-              : "#1c2230"
+              : "#0f1b2d"
             : color;
         const label = visited
           ? "✓"
@@ -3193,7 +3510,7 @@
             : stopPts;
         const color = state.dayChunks
           ? DAY_COLORS[state.activeDay % DAY_COLORS.length]
-          : "#4285F4";
+          : "#2452c7";
         routeLine.setStyle({ color });
 
         if (pts.length < 2) {
@@ -3404,6 +3721,14 @@
           frag.appendChild(row);
         });
         storeListEl.appendChild(frag);
+        if (list.length === 0) {
+          const q = searchBoxEl ? searchBoxEl.value.trim() : "";
+          storeListEl.innerHTML = q
+            ? '<div class="empty-state"><p><b>No stores match \u201c' + escapeHtml(q) + '\u201d.</b></p><p>Try a store name, code or subdistrict.</p><button type="button" id="emptyClearSearch">Clear search</button></div>'
+            : '<div class="empty-state"><p><b>No stores to show.</b></p><p>Check the district filter. If the list is still empty, ask an admin to confirm your stores.</p></div>';
+          const cb = document.getElementById("emptyClearSearch");
+          if (cb) cb.addEventListener("click", () => { searchBoxEl.value = ""; searchBoxEl.dispatchEvent(new Event("input")); });
+        }
         // Stores already checked into the route must stay visible on the map regardless of
         // what's currently typed in search -- otherwise renderMarkers (which clears every
         // marker and redraws only what it's given) silently wipes the pin for a store still
@@ -3759,16 +4084,16 @@
             row.className = "route-row";
             row.dataset.id = id;
             row.innerHTML = `
-        <button class="drag-handle" aria-label="Drag to reorder ${escapeHtml(store.name)}">⠿</button>
+        <button class="drag-handle" aria-label="Drag to reorder ${escapeHtml(store.name)}"><svg class="ico dots" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
         <div class="seq">${idx + 1}</div>
         <div class="info">
           <div class="name">${escapeHtml(store.name)}</div>
           <div class="meta">${store.type} · ${escapeHtml(store.subdistrict || "")}</div>
         </div>
         <div class="btns">
-          <button data-up>↑</button>
-          <button data-down>↓</button>
-          <button data-remove>✕</button>
+          <button data-up aria-label="Move up"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 15 6-6 6 6"/></svg></button>
+          <button data-down aria-label="Move down"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button data-remove aria-label="Remove from route"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>`;
             row
               .querySelector("[data-up]")
