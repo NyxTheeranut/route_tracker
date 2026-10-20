@@ -30,15 +30,17 @@ DASHBOARD_DIR = Path(__file__).resolve().parent.parent.parent
 
 def _find(name):
     """Locate a file that lives outside this repo, in the Dashboard folder.
-    The source spreadsheets and the secret were moved into "Store Database/" and
-    "Config/"; the bare Dashboard root is kept as a fallback so an older layout
-    (or a copy left at the top level) still works. Returns the Store Database/
-    path when nothing is found, so the error message names a sensible location."""
-    for folder in (DASHBOARD_DIR / "Store Database", DASHBOARD_DIR / "Config", DASHBOARD_DIR):
+    The source spreadsheets live in "Shared Data/Store Database/" and the secret in
+    "Config/"; the old top-level "Store Database/" and the bare Dashboard root are
+    kept as fallbacks so an older layout still works. Returns the Shared Data/
+    Store Database/ path when nothing is found, so the error message names a
+    sensible location."""
+    for folder in (DASHBOARD_DIR / "Shared Data" / "Store Database", DASHBOARD_DIR / "Store Database",
+                   DASHBOARD_DIR / "Config", DASHBOARD_DIR):
         candidate = folder / name
         if candidate.exists():
             return candidate
-    return DASHBOARD_DIR / "Store Database" / name
+    return DASHBOARD_DIR / "Shared Data" / "Store Database" / name
 
 
 SEVEN_ELEVEN_XLSX = _find("Google_MyMap_7-Eleven Database NTB.xlsx")

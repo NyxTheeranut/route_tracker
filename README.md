@@ -36,7 +36,7 @@ sync/              update_stores_sheet.py -- the local store-list sync tool
 ```
 
 `sync/update_stores_sheet.py` reaches outside this repo to the Dashboard
-folder's `Store Database/` (source xlsx files) and `Config/` (the sync
+folder's `Shared Data/Store Database/` (source xlsx files) and `Config/` (the sync
 secret) -- see the next section.
 
 ## One-time setup
