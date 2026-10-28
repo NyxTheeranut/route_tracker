@@ -94,8 +94,12 @@ function doPost(e) {
 
     if (body.action === "markVisited") {
       var user = requireTeamMember_(body.idToken);
-      requireOwnScope_(user, body.person, body.cm);
-      upsertVisit_(body);
+      // Who/what the visit is for is decided HERE from the Sheet's own store record, never from
+      // the request: the caller only names a store (code + type), and that store must be in
+      // their scope. person / cm / storeName / storeType are copied from the record, so nothing
+      // a caller types can be written into the Sheet or point at someone else's records.
+      var store = requireStoreInScope_(user, body.storeCode, body.storeType);
+      upsertVisit_(store, body.date, !!body.visited);
       return jsonResponse_({ ok: true });
     }
 
@@ -127,20 +131,20 @@ function doPost(e) {
       return jsonResponse_({ ok: true, count: count });
     }
 
-    // TEMPORARY diagnostic for the "CM signs in, sees zero stores" investigation --
-    // read-only (writes nothing), gated the same way as syncStores since this isn't a
-    // person signing in either. Safe to leave in, but delete this block (and
-    // debugCmMatch_ below) once the mismatch is found -- it's not meant to be permanent
-    // API surface.
-    if (body.action === "debugCmMatch") {
-      requireSyncSecret_(body.secret);
-      return jsonResponse_(debugCmMatch_(body.email));
-    }
-
     return jsonResponse_({ ok: false, error: "unknown action" });
   } catch (err) {
-    return jsonResponse_({ ok: false, error: String(err) });
+    return errorResponse_(err);
   }
+}
+
+// Only messages we wrote for the caller go back as-is; anything else (Apps Script / Sheets internals,
+// quota names, TypeErrors) is logged for the owner and answered with a generic code.
+var CALLER_ERROR_RE = /^(not signed in|no_access|forbidden|invalid |plan )/;
+function errorResponse_(err) {
+  var msg = String((err && err.message) || err);
+  if (CALLER_ERROR_RE.test(msg)) return jsonResponse_({ ok: false, error: msg });
+  console.error(msg);
+  return jsonResponse_({ ok: false, error: "server_error" });
 }
 
 function doGet(e) {
@@ -155,7 +159,7 @@ function doGet(e) {
     }
     return jsonResponse_({ ok: true });
   } catch (err) {
-    return jsonResponse_({ ok: false, error: String(err) });
+    return errorResponse_(err);
   }
 }
 
@@ -187,10 +191,36 @@ function requireTeamMember_(idToken) {
 function requireOwnScope_(user, person, cm) {
   if (user.role === "admin") return;
   if (user.role === "cm") {
+    // The person must actually be on this CM's team. Leaving `cm` out of the request no longer skips
+    // the check (it used to), and a name is only accepted if one of this CM's own stores has it.
     if (cm != null && cm !== user.cmName) throw new Error("forbidden: not your team");
+    var onTeam = readAllStores_().some(function (s) {
+      return s.cm === user.cmName && s.person === person;
+    });
+    if (!onTeam) throw new Error("forbidden: not your team");
     return;
   }
   if (person !== user.personName) throw new Error("forbidden: not your own records");
+}
+
+// The store a markVisited request points at, if (and only if) it is inside the caller's scope: an ae's
+// own stores, a cm's team, or anything for admin. Returns the Sheet's own record for it.
+function requireStoreInScope_(user, storeCode, storeType) {
+  var code = String(storeCode == null ? "" : storeCode);
+  var type = String(storeType == null ? "" : storeType);
+  if (!code || code.length > 40) throw new Error("invalid store");
+  var hits = readAllStores_().filter(function (s) {
+    return s.code === code && String(s.type) === type;
+  });
+  if (!hits.length) throw new Error("forbidden: unknown store");
+  var store = hits[0];
+  if (user.role === "admin") return store;
+  if (user.role === "cm") {
+    if (store.cm !== user.cmName) throw new Error("forbidden: not your team");
+    return store;
+  }
+  if (store.person !== user.personName) throw new Error("forbidden: not your own records");
+  return store;
 }
 
 // syncStores_ isn't a person signing in -- it's update_stores_sheet.py on your
@@ -280,28 +310,9 @@ function myStores_(idToken) {
     email: email,
     role: user.role,
     stores: scoped,
-    // Not used by the normal UI -- surfaced in the browser console so "why do
-    // I see 0 stores" is answerable by looking, not guessing: is it that no
-    // store data was found at all, or that data exists but didn't match this
-    // person/cm's name exactly?
-    debug: {
-      totalStoresFound: stores.length,
-      totalByType: countByType_(stores),
-      matchedForYou: scoped.length,
-      matchedOn: user.role === "admin" ? "admin (no filter)"
-        : user.role === "cm" ? { cm: user.cmName }
-        : { person: user.personName },
-    },
+    // (A `debug` block with company-wide store counts used to be returned here to every signed-in
+    // user. Removed: it told an ae how many stores exist across the whole company.)
   };
-}
-
-function countByType_(stores) {
-  var counts = {};
-  stores.forEach(function (s) {
-    var t = s.type || "unknown";
-    counts[t] = (counts[t] || 0) + 1;
-  });
-  return counts;
 }
 
 // Scans every tab in the spreadsheet and reads any that look like store data --
@@ -382,16 +393,23 @@ function routesSheet_() {
 function saveRoute_(email, planJson, summary) {
   if (typeof planJson !== "string") throw new Error("plan must be a JSON string");
   if (planJson.length > MAX_PLAN_CHARS) throw new Error("plan too large");
-  var sheet = routesSheet_();
-  var data = sheet.getDataRange().getValues();
-  var row = [email, new Date(), summary || "", planJson];
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim().toLowerCase() === email.toLowerCase()) {
-      writeRouteRow_(sheet, i + 1, row);
-      return;
+  summary = String(summary || "").slice(0, 300);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = routesSheet_();
+    var data = sheet.getDataRange().getValues();
+    var row = [email, new Date(), summary, planJson];
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]).trim().toLowerCase() === email.toLowerCase()) {
+        writeRouteRow_(sheet, i + 1, row);
+        return;
+      }
     }
+    writeRouteRow_(sheet, data.length + 1, row);
+  } finally {
+    lock.releaseLock();
   }
-  writeRouteRow_(sheet, data.length + 1, row);
 }
 
 function writeRouteRow_(sheet, rowNum, row) {
@@ -429,12 +447,22 @@ function getDaySheet_(dateStr, createIfMissing) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(dateStr);
   if (!sheet && createIfMissing) {
+    // Only today's tab (or one day either side, for phones whose clock/time zone differs from the
+    // script's) may be CREATED. Otherwise date:"9999-12-31" would make every real tab look
+    // 30+ days old and delete them, and a loop of old dates could fill the spreadsheet with empty tabs.
+    var today = todayKey_();
+    var diff = Math.abs(Math.round((parseDate_(dateStr) - parseDate_(today)) / 86400000));
+    if (diff > 1) throw new Error("invalid date");
     sheet = ss.insertSheet(dateStr);
     sheet.appendRow(VISIT_HEADER);
     sheet.setFrozenRows(1);
-    cleanupOldSheets_(dateStr);
+    cleanupOldSheets_(today); // the server's own today -- never a date the request supplied
   }
   return sheet;
+}
+
+function todayKey_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
 }
 
 function visitColIndex_() {
@@ -443,34 +471,42 @@ function visitColIndex_() {
   return idx;
 }
 
-function upsertVisit_(body) {
-  var dateStr =
-    body.date ||
-    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-  var sheet = getDaySheet_(dateStr, true);
-  var idx = visitColIndex_();
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (
-      row[idx.person] === body.person &&
-      String(row[idx.storeCode]) === String(body.storeCode)
-    ) {
-      sheet.getRange(i + 1, idx.timestamp + 1).setValue(new Date());
-      sheet.getRange(i + 1, idx.visited + 1).setValue(!!body.visited);
-      return;
+function upsertVisit_(store, requestedDate, visited) {
+  var dateStr = requestedDate || todayKey_();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = getDaySheet_(dateStr, true);
+    var idx = visitColIndex_();
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (
+        row[idx.person] === store.person &&
+        String(row[idx.storeCode]) === String(store.code)
+      ) {
+        sheet.getRange(i + 1, idx.timestamp + 1).setValue(new Date());
+        sheet.getRange(i + 1, idx.visited + 1).setValue(visited);
+        return;
+      }
     }
+    var rowNum = sheet.getLastRow() + 1;
+    // person..storeType are plain text BEFORE the values land, so nothing in them can be read as a
+    // formula; timestamp / date / visited keep their normal types.
+    sheet.getRange(rowNum, idx.person + 1, 1, idx.storeType - idx.person + 1).setNumberFormat("@");
+    sheet.getRange(rowNum, 1, 1, VISIT_HEADER.length).setValues([[
+      new Date(),
+      dateStr,
+      store.person || "",
+      store.cm || "",
+      store.code || "",
+      store.name || "",
+      store.type || "",
+      visited,
+    ]]);
+  } finally {
+    lock.releaseLock();
   }
-  sheet.appendRow([
-    new Date(),
-    dateStr,
-    body.person || "",
-    body.cm || "",
-    body.storeCode || "",
-    body.storeName || "",
-    body.storeType || "",
-    !!body.visited,
-  ]);
 }
 
 function getVisits_(person, dateStr) {
@@ -568,78 +604,6 @@ function writeStoreSheet_(sheetName, stores) {
   range.setValues(rows);
   sheet.setFrozenRows(1);
   sheet.autoResizeColumns(1, STORE_HEADER.length);
-}
-
-// ---------- TEMPORARY: CM/AE zero-stores diagnostic (see doPost's debugCmMatch) ----------
-// Char codes turn an invisible difference (trailing space, a look-alike Thai codepoint,
-// a zero-width character) into something visibly comparable -- two strings that render
-// identically on screen can still fail === if even one code point differs.
-function charCodes_(s) {
-  return String(s || "")
-    .split("")
-    .map(function (ch) { return ch.charCodeAt(0); });
-}
-
-function debugCmMatch_(targetEmail) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // 1. The Users tab row for this email, raw AND trimmed, both with char codes.
-  var usersSheet = ss.getSheetByName("Users");
-  var userRow = null;
-  if (usersSheet) {
-    var data = usersSheet.getDataRange().getValues();
-    var header = data[0];
-    var idx = {};
-    header.forEach(function (h, i) { idx[String(h).trim()] = i; });
-    for (var i = 1; i < data.length; i++) {
-      if (String(data[i][idx.email]).trim().toLowerCase() === String(targetEmail).trim().toLowerCase()) {
-        var rawCm = data[i][idx.cm_name];
-        var rawPerson = data[i][idx.person_name];
-        userRow = {
-          role: data[i][idx.role],
-          person_name_raw: rawPerson,
-          person_name_trimmed: String(rawPerson || "").trim(),
-          person_name_charCodes: charCodes_(String(rawPerson || "").trim()),
-          cm_name_raw: rawCm,
-          cm_name_trimmed: String(rawCm || "").trim(),
-          cm_name_charCodes: charCodes_(String(rawCm || "").trim()),
-        };
-        break;
-      }
-    }
-  }
-
-  // 2. Every DISTINCT cm value actually present in the store data, post-trim (i.e. exactly
-  // what the live myStores_ comparison sees today), each with char codes -- so
-  // userRow.cm_name_trimmed can be checked for an exact match against this list, or the
-  // closest-looking entry can be diffed by eye via its char codes.
-  var distinctCm = {};
-  ss.getSheets().forEach(function (sheet) {
-    if (!/stores$/i.test(sheet.getName().trim())) return;
-    var d = sheet.getDataRange().getValues();
-    if (d.length < 2) return;
-    var sIdx = {};
-    d[0].forEach(function (h, i) { sIdx[String(h).trim()] = i; });
-    if (sIdx.cm == null) return;
-    for (var r = 1; r < d.length; r++) {
-      var cmVal = String(d[r][sIdx.cm] || "").trim();
-      if (cmVal) distinctCm[cmVal] = (distinctCm[cmVal] || 0) + 1;
-    }
-  });
-  var distinctCmList = Object.keys(distinctCm).map(function (cm) {
-    return { value: cm, storeCount: distinctCm[cm], charCodes: charCodes_(cm) };
-  });
-
-  var exactMatchExists = userRow
-    ? distinctCmList.some(function (c) { return c.value === userRow.cm_name_trimmed; })
-    : null;
-
-  return {
-    ok: true,
-    userRow: userRow,
-    exactMatchExistsInStoreData: exactMatchExists,
-    distinctCmValuesInStoreData: distinctCmList,
-  };
 }
 
 function jsonResponse_(obj) {
